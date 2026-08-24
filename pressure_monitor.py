@@ -56,6 +56,20 @@ DEFAULT_ADMIN_ID = 'admin'
 DEFAULT_ADMIN_PW = '1234'
 ANOMALY_LOG_PATH = 'anomaly_log.csv'
 
+# ── UI 테마 ──────────────────────────────────────────────────────────
+T_BG    = "#0d1117"   # 창 배경
+T_PANEL = "#161b22"   # 좌측 패널
+T_CARD  = "#21262d"   # 카드/입력 배경
+T_BORD  = "#30363d"   # 구분선
+T_TEXT  = "#e6edf3"   # 기본 텍스트
+T_DIM   = "#8b949e"   # 보조 텍스트
+T_GREEN = "#238636"   # 시작/정상
+T_GRNH  = "#2ea043"   # 시작 hover
+T_BLUE  = "#388bfd"   # 강조
+T_ORNG  = "#d29922"   # 경고
+T_RED   = "#da3633"   # 정지/오류
+T_FIG   = "#0d1117"   # matplotlib figure 배경
+
 
 def _hash_password(pw):
     return hashlib.sha256(pw.encode('utf-8')).hexdigest()
@@ -158,9 +172,9 @@ class App:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("1x16 압력 센서 모니터 (Contour)")
-        self.root.geometry("980x640")
-        self.root.configure(bg="#1e1e1e")
+        self.root.title("Pressure Monitor  ·  1×16ch")
+        self.root.geometry("1120x700")
+        self.root.configure(bg=T_BG)
 
         self.data_queue = queue.Queue()
         self.reader = None
@@ -193,19 +207,19 @@ class App:
             style.theme_use('clam')
         except Exception:
             pass
-        style.configure('TNotebook', background="#1e1e1e", borderwidth=0)
-        style.configure('TNotebook.Tab', background="#2a2a2a", foreground="white",
-                        padding=(18, 8), font=("맑은 고딕", 10))
+        style.configure('TNotebook', background=T_BG, borderwidth=0)
+        style.configure('TNotebook.Tab', background=T_PANEL, foreground=T_DIM,
+                        padding=(22, 9), font=("맑은 고딕", 10))
         style.map('TNotebook.Tab',
-                 background=[('selected', "#3a3a3a")],
-                 foreground=[('selected', "white")])
+                 background=[('selected', T_CARD)],
+                 foreground=[('selected', T_TEXT)])
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        measuring_tab = tk.Frame(self.notebook, bg="#1e1e1e")
-        admin_tab = tk.Frame(self.notebook, bg="#1e1e1e")
-        calibration_tab = tk.Frame(self.notebook, bg="#1e1e1e")
+        measuring_tab = tk.Frame(self.notebook, bg=T_BG)
+        admin_tab = tk.Frame(self.notebook, bg=T_BG)
+        calibration_tab = tk.Frame(self.notebook, bg=T_BG)
         self.notebook.add(measuring_tab, text="측정")
         self.notebook.add(admin_tab, text="관리자")
         self.notebook.add(calibration_tab, text="보정")
@@ -228,150 +242,152 @@ class App:
 
     # ---------------- 왼쪽: 제어판 ----------------
     def _build_left_panel(self, parent):
-        left = tk.Frame(parent, bg="#252526", width=220)
+        left = tk.Frame(parent, bg=T_PANEL, width=248)
         left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
-        tk.Label(left, text="제어판", bg="#252526", fg="white",
-                 font=("맑은 고딕", 14, "bold")).pack(pady=(20, 10))
+        # ── 앱 헤더 ──────────────────────────────────────────────────
+        hdr = tk.Frame(left, bg="#0a0f16", height=72)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="PRESSURE MONITOR", bg="#0a0f16", fg=T_TEXT,
+                 font=("Consolas", 10, "bold")).place(relx=0.5, rely=0.38, anchor="center")
+        tk.Label(hdr, text="1×16 ch  ·  STM32 + AD7175",
+                 bg="#0a0f16", fg=T_DIM, font=("Consolas", 7)).place(
+            relx=0.5, rely=0.72, anchor="center")
 
-        tk.Label(left, text="포트", bg="#252526", fg="#aaaaaa",
-                 font=("맑은 고딕", 10)).pack(anchor="w", padx=20)
+        def _sec(text):
+            """섹션 헤더: 파란 레이블 + 가로 구분선"""
+            f = tk.Frame(left, bg=T_PANEL)
+            f.pack(fill=tk.X, padx=14, pady=(13, 5))
+            tk.Label(f, text=text, bg=T_PANEL, fg=T_BLUE,
+                     font=("Consolas", 7, "bold")).pack(side=tk.LEFT)
+            tk.Frame(f, bg=T_BORD, height=1).pack(
+                side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), pady=4)
 
-        self.port_entry = tk.Entry(left, font=("Consolas", 12), justify="center")
+        # ── CONNECTION ───────────────────────────────────────────────
+        _sec("CONNECTION")
+
+        tk.Label(left, text="Serial Port", bg=T_PANEL, fg=T_DIM,
+                 font=("Consolas", 7)).pack(anchor="w", padx=14)
+        self.port_entry = tk.Entry(
+            left, font=("Consolas", 11), justify="center",
+            bg=T_CARD, fg=T_TEXT, insertbackground=T_TEXT,
+            relief=tk.FLAT, highlightbackground=T_BORD, highlightthickness=1)
         self.port_entry.insert(0, DEFAULT_PORT)
-        self.port_entry.pack(padx=20, pady=(2, 15), fill=tk.X)
+        self.port_entry.pack(padx=14, pady=(2, 8), fill=tk.X, ipady=5)
 
+        btn_row = tk.Frame(left, bg=T_PANEL)
+        btn_row.pack(fill=tk.X, padx=14, pady=(0, 6))
         self.start_btn = tk.Button(
-            left, text="▶  Start", font=("맑은 고딕", 12, "bold"),
-            bg="#2ea043", fg="white", activebackground="#3fb950",
-            relief=tk.FLAT, height=2, command=self.start_stream
-        )
-        self.start_btn.pack(padx=20, pady=(5, 8), fill=tk.X)
-
+            btn_row, text="▶  Start", font=("맑은 고딕", 10, "bold"),
+            bg=T_GREEN, fg=T_TEXT, activebackground=T_GRNH, activeforeground=T_TEXT,
+            relief=tk.FLAT, pady=7, command=self.start_stream)
+        self.start_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         self.stop_btn = tk.Button(
-            left, text="■  Stop", font=("맑은 고딕", 12, "bold"),
-            bg="#4a4a4a", fg="white", activebackground="#5a5a5a",
-            relief=tk.FLAT, height=2, state=tk.DISABLED, command=self.stop_stream
-        )
-        self.stop_btn.pack(padx=20, pady=(0, 8), fill=tk.X)
+            btn_row, text="■  Stop", font=("맑은 고딕", 10, "bold"),
+            bg=T_CARD, fg=T_DIM, activebackground=T_RED, activeforeground=T_TEXT,
+            relief=tk.FLAT, pady=7, state=tk.DISABLED, command=self.stop_stream)
+        self.stop_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # ── DISPLAY ──────────────────────────────────────────────────
+        _sec("DISPLAY")
+
+        icard = tk.Frame(left, bg=T_CARD,
+                         highlightbackground=T_BORD, highlightthickness=1)
+        icard.pack(padx=14, pady=(0, 6), fill=tk.X)
+        ih = tk.Frame(icard, bg=T_CARD)
+        ih.pack(fill=tk.X, padx=10, pady=(7, 2))
+        tk.Label(ih, text="부드러움", bg=T_CARD, fg=T_DIM,
+                 font=("Consolas", 8)).pack(side=tk.LEFT)
+        self.interp_value_label = tk.Label(ih, text=str(self.smoothness),
+                                           bg=T_CARD, fg=T_BLUE,
+                                           font=("Consolas", 9, "bold"))
+        self.interp_value_label.pack(side=tk.RIGHT)
+        self.interp_slider = tk.Scale(
+            icard, from_=0, to=100, orient=tk.HORIZONTAL,
+            bg=T_CARD, fg=T_BLUE, troughcolor=T_BORD,
+            highlightthickness=0, showvalue=False, sliderrelief=tk.FLAT,
+            command=self._on_interp_change)
+        self.interp_slider.set(self.smoothness)
+        self.interp_slider.pack(fill=tk.X, padx=8, pady=(0, 2))
+        tk.Label(icard, text="0: 계단식  ·  100: 부드러움",
+                 bg=T_CARD, fg=T_DIM, font=("Consolas", 6)).pack(
+            anchor="w", padx=10, pady=(0, 7))
 
         self.reset_btn = tk.Button(
-            left, text="실시간 범위 초기화", font=("맑은 고딕", 10),
-            bg="#3a3a3a", fg="white", relief=tk.FLAT,
-            command=self.reset_live_range
-        )
-        self.reset_btn.pack(padx=20, pady=(0, 14), fill=tk.X)
+            left, text="실시간 범위 초기화", font=("맑은 고딕", 8),
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+            relief=tk.FLAT, pady=4, command=self.reset_live_range)
+        self.reset_btn.pack(padx=14, pady=(0, 2), fill=tk.X)
 
-        # --- 부드러움 슬라이더 (0=계단식, 100=경계가 넓게 부드러움) ---
-        interp_card = tk.Frame(left, bg="#2a2d33", highlightbackground="#3a4a5c",
-                               highlightthickness=1)
-        interp_card.pack(padx=20, pady=(0, 14), fill=tk.X)
-
-        interp_header = tk.Frame(interp_card, bg="#2a2d33")
-        interp_header.pack(fill=tk.X, padx=10, pady=(8, 2))
-        tk.Label(interp_header, text="부드러움", bg="#2a2d33", fg="#cccccc",
-                 font=("맑은 고딕", 9)).pack(side=tk.LEFT)
-        self.interp_value_label = tk.Label(
-            interp_header, text=str(self.smoothness), bg="#2a2d33", fg="#4da3ff",
-            font=("Consolas", 10, "bold")
-        )
-        self.interp_value_label.pack(side=tk.RIGHT)
-
-        self.interp_slider = tk.Scale(
-            interp_card, from_=0, to=100, orient=tk.HORIZONTAL,
-            bg="#2a2d33", fg="#4da3ff", troughcolor="#444444",
-            highlightthickness=0, showvalue=False, sliderrelief=tk.FLAT,
-            command=self._on_interp_change
-        )
-        self.interp_slider.set(self.smoothness)
-        self.interp_slider.pack(fill=tk.X, padx=6, pady=(0, 2))
-
-        tk.Label(interp_card, text="0: 계단식 · 100: 경계만 넓게 부드럽게",
-                 bg="#2a2d33", fg="#666666", font=("맑은 고딕", 7)).pack(
-            anchor="w", padx=10, pady=(0, 8))
+        # ── DATA ─────────────────────────────────────────────────────
+        _sec("DATA")
 
         self.save_btn = tk.Button(
-            left, text="저장 (CSV)", font=("맑은 고딕", 11, "bold"),
-            bg="#3a3a3a", fg="#888888", relief=tk.FLAT,
-            state=tk.DISABLED, command=self.save_csv
-        )
-        self.save_btn.pack(padx=20, pady=(0, 20), fill=tk.X)
-
+            left, text="CSV 저장", font=("맑은 고딕", 9, "bold"),
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+            relief=tk.FLAT, pady=5, state=tk.DISABLED, command=self.save_csv)
+        self.save_btn.pack(padx=14, pady=(0, 5), fill=tk.X)
         self.record_count_label = tk.Label(
-            left, text="기록: 0줄", bg="#252526", fg="#666666",
-            font=("Consolas", 9)
-        )
-        self.record_count_label.pack(anchor="w", padx=20, pady=(0, 10))
+            left, text="기록  0 줄", bg=T_PANEL, fg=T_DIM,
+            font=("Consolas", 8))
+        self.record_count_label.pack(anchor="w", padx=14)
 
-        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=10)
+        # ── STATUS ───────────────────────────────────────────────────
+        _sec("STATUS")
 
         self.status_label = tk.Label(
-            left, text="● 연결 안 됨", bg="#252526", fg="#888888",
-            font=("맑은 고딕", 10)
-        )
-        self.status_label.pack(anchor="w", padx=20, pady=(10, 5))
-
+            left, text="●  연결 안 됨", bg=T_PANEL, fg=T_DIM,
+            font=("맑은 고딕", 9))
+        self.status_label.pack(anchor="w", padx=14, pady=(0, 2))
         self.info_label = tk.Label(
-            left, text="", bg="#252526", fg="#666666",
-            font=("Consolas", 9), justify="left"
-        )
-        self.info_label.pack(anchor="w", padx=20)
-
+            left, text="", bg=T_PANEL, fg=T_DIM,
+            font=("Consolas", 7), justify="left")
+        self.info_label.pack(anchor="w", padx=14)
         self.scale_label = tk.Label(
-            left, text=f"색상 범위: {SCALE_MIN} ~ {SCALE_MAX} (고정)", bg="#252526",
-            fg="#666666", font=("Consolas", 9), justify="left"
-        )
-        self.scale_label.pack(anchor="w", padx=20, pady=(5, 0))
-
+            left, text=f"범위  {SCALE_MIN} – {SCALE_MAX}", bg=T_PANEL,
+            fg=T_DIM, font=("Consolas", 7))
+        self.scale_label.pack(anchor="w", padx=14, pady=(4, 0))
         self.range_label = tk.Label(
-            left, text="실시간: -", bg="#252526", fg="#666666",
-            font=("Consolas", 9), justify="left"
-        )
-        self.range_label.pack(anchor="w", padx=20, pady=(2, 0))
+            left, text="실시간  –", bg=T_PANEL, fg=T_DIM,
+            font=("Consolas", 7))
+        self.range_label.pack(anchor="w", padx=14, pady=(1, 0))
+        tk.Button(
+            left, text="이상 로그 열기", font=("Consolas", 7),
+            bg=T_PANEL, fg=T_DIM, activebackground=T_CARD,
+            relief=tk.FLAT, pady=2, command=self._open_anomaly_log
+        ).pack(anchor="w", padx=14, pady=(5, 0))
+
+        # ── CALIBRATION ──────────────────────────────────────────────
+        _sec("CALIBRATION")
 
         tk.Button(
-            left, text="이상 로그 열기", font=("맑은 고딕", 8),
-            bg="#2a2a2a", fg="#888888", relief=tk.FLAT,
-            command=self._open_anomaly_log
-        ).pack(anchor="w", padx=20, pady=(6, 0))
-
-        # --- 보정 적용 섹션 ---
-        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(12, 8))
-
-        tk.Label(left, text="보정 적용", bg="#252526", fg="#aaaaaa",
-                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20)
-
-        tk.Button(
-            left, text="보정 파일 불러오기", font=("맑은 고딕", 9),
-            bg="#3a3a3a", fg="white", relief=tk.FLAT,
-            command=self._load_calibration_file
-        ).pack(padx=20, pady=(4, 4), fill=tk.X)
-
+            left, text="보정 파일 불러오기", font=("맑은 고딕", 8),
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+            relief=tk.FLAT, pady=5, command=self._load_calibration_file
+        ).pack(padx=14, pady=(0, 4), fill=tk.X)
         self.cal_loaded_label = tk.Label(
-            left, text="파일 없음", bg="#252526", fg="#666666",
-            font=("Consolas", 8), wraplength=178, justify="left"
-        )
-        self.cal_loaded_label.pack(anchor="w", padx=20, pady=(0, 6))
-
-        tk.Label(
-            left, text="우측 컨투어에 자동 반영됩니다",
-            bg="#252526", fg="#555555", font=("맑은 고딕", 8)
-        ).pack(anchor="w", padx=20, pady=(0, 10))
+            left, text="파일 없음", bg=T_PANEL, fg=T_DIM,
+            font=("Consolas", 7), wraplength=215, justify="left")
+        self.cal_loaded_label.pack(anchor="w", padx=14)
+        tk.Label(left, text="우측 컨투어에 자동 반영",
+                 bg=T_PANEL, fg=T_DIM, font=("Consolas", 6)
+                 ).pack(anchor="w", padx=14, pady=(2, 0))
 
     # ---------------- 오른쪽: 원본 | 보정 적용 2분할 컨투어 ----------------
     def _build_right_panel(self, parent):
-        right = tk.Frame(parent, bg="#1e1e1e")
+        right = tk.Frame(parent, bg=T_BG)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        hdr = tk.Frame(right, bg="#1e1e1e")
-        hdr.pack(fill=tk.X, pady=(14, 2))
-        tk.Label(hdr, text="원본", bg="#1e1e1e", fg="#aaaaaa",
-                 font=("맑은 고딕", 11, "bold")).pack(side=tk.LEFT, padx=(60, 0))
-        tk.Label(hdr, text="보정 적용", bg="#1e1e1e", fg="#4da3ff",
-                 font=("맑은 고딕", 11, "bold")).pack(side=tk.RIGHT, padx=(0, 60))
+        hdr = tk.Frame(right, bg=T_BG)
+        hdr.pack(fill=tk.X, pady=(12, 0))
+        tk.Label(hdr, text="RAW", bg=T_BG, fg=T_DIM,
+                 font=("Consolas", 10, "bold")).pack(side=tk.LEFT, padx=(70, 0))
+        tk.Label(hdr, text="CALIBRATED", bg=T_BG, fg=T_BLUE,
+                 font=("Consolas", 10, "bold")).pack(side=tk.RIGHT, padx=(0, 70))
 
-        self.fig = Figure(figsize=(7.2, 4.2), dpi=100, facecolor="#1e1e1e")
+        self.fig = Figure(figsize=(7.2, 4.2), dpi=100, facecolor=T_FIG)
 
         # 좌: 원본 / 우: 보정 적용 — 컬러바 포함 4축 고정 배치
         self.ax_raw = self.fig.add_axes([0.05, 0.14, 0.36, 0.76])
@@ -403,46 +419,43 @@ class App:
                 lbl.set_color("white")
 
         # ── 채널별 실시간 수치 테이블 ──────────────────────────────────
-        tbl = tk.Frame(right, bg="#1a1a1a")
-        tbl.pack(fill=tk.X, padx=6, pady=(0, 6))
+        tbl = tk.Frame(right, bg=T_BG)
+        tbl.pack(fill=tk.X, padx=8, pady=(0, 4))
 
         FONT = ("Consolas", 7)
         COL_W = 5
 
-        # 헤더 행 (ch0 ~ ch15)
-        tk.Label(tbl, text="", bg="#1a1a1a", width=4, font=FONT).grid(
+        tk.Label(tbl, text="", bg=T_BG, width=4, font=FONT).grid(
             row=0, column=0, padx=1, pady=1)
         for i in range(NUM_CHANNELS):
-            tk.Label(tbl, text=f"ch{i}", bg="#1a1a1a", fg="#666666",
+            tk.Label(tbl, text=f"{i:02d}", bg=T_BG, fg=T_DIM,
                      font=FONT, width=COL_W).grid(row=0, column=i + 1, padx=1)
 
-        # 원본 행 (raw ADC)
-        tk.Label(tbl, text="원본", bg="#1a1a1a", fg="#aaaaaa",
+        tk.Label(tbl, text="RAW", bg=T_BG, fg=T_DIM,
                  font=FONT, width=4).grid(row=1, column=0, padx=1, pady=1)
         self.raw_val_labels = []
         for i in range(NUM_CHANNELS):
-            lbl = tk.Label(tbl, text="-", bg="#252526", fg="#cccccc",
+            lbl = tk.Label(tbl, text="-", bg=T_CARD, fg=T_TEXT,
                            font=FONT, width=COL_W)
             lbl.grid(row=1, column=i + 1, padx=1, pady=1)
             self.raw_val_labels.append(lbl)
 
-        # 보정 행 (offset - raw, 0 = 무압력 기준)
-        tk.Label(tbl, text="보정Δ", bg="#1a1a1a", fg="#4da3ff",
+        tk.Label(tbl, text="CAL", bg=T_BG, fg=T_BLUE,
                  font=FONT, width=4).grid(row=2, column=0, padx=1, pady=1)
         self.cal_val_labels = []
         for i in range(NUM_CHANNELS):
-            lbl = tk.Label(tbl, text="-", bg="#252526", fg="#4da3ff",
+            lbl = tk.Label(tbl, text="-", bg=T_CARD, fg=T_BLUE,
                            font=FONT, width=COL_W)
             lbl.grid(row=2, column=i + 1, padx=1, pady=1)
             self.cal_val_labels.append(lbl)
 
         # ── 채널 상태 바 ──────────────────────────────────────────────
         self.ch_status_label = tk.Label(
-            right, text="● 전 채널 정상",
-            bg="#1e1e1e", fg="#3fb950",
-            font=("맑은 고딕", 8), anchor="w"
+            right, text="●  전 채널 정상",
+            bg=T_BG, fg=T_GREEN,
+            font=("Consolas", 8), anchor="w"
         )
-        self.ch_status_label.pack(fill=tk.X, padx=10, pady=(0, 4))
+        self.ch_status_label.pack(fill=tk.X, padx=12, pady=(0, 5))
 
         self._draw_contour([0] * NUM_CHANNELS, force=True)
 
@@ -695,13 +708,13 @@ class App:
         messagebox.showinfo("비밀번호 변경", "비밀번호가 변경되었습니다.")
 
     def _style_axes(self, ax):
-        ax.set_facecolor("#1e1e1e")
+        ax.set_facecolor(T_FIG)
         ax.set_xticks(range(NUM_CHANNELS))
-        ax.set_xlabel("Channel", color="white")
+        ax.set_xlabel("ch", color=T_DIM, fontsize=7)
         ax.set_yticks([])
-        ax.tick_params(colors="white")
+        ax.tick_params(colors=T_DIM, labelsize=7)
         for spine in ax.spines.values():
-            spine.set_color("#555555")
+            spine.set_color(T_BORD)
 
     # ---------------- 동작 로직 ----------------
     def start_stream(self):
@@ -714,12 +727,12 @@ class App:
         self.record_start_time = None
         self.live_min = None
         self.live_max = None
-        self.record_count_label.config(text="기록: 0줄")
-        self.save_btn.config(state=tk.DISABLED, fg="#888888")
+        self.record_count_label.config(text="기록  0 줄")
+        self.save_btn.config(state=tk.DISABLED, fg=T_DIM)
 
-        self.status_label.config(text=f"● {port} 연결 시도 중...", fg="#e3b341")
+        self.status_label.config(text=f"●  {port} 연결 중…", fg=T_ORNG)
         self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL, bg="#da3633")
+        self.stop_btn.config(state=tk.NORMAL, bg=T_RED, fg=T_TEXT)
         self.port_entry.config(state=tk.DISABLED)
 
     def stop_stream(self):
@@ -727,14 +740,14 @@ class App:
             self.reader.stop()
             self.reader = None
 
-        self.status_label.config(text="● 정지됨", fg="#888888")
+        self.status_label.config(text="●  정지됨", fg=T_DIM)
         self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED, bg="#4a4a4a")
+        self.stop_btn.config(state=tk.DISABLED, bg=T_CARD, fg=T_DIM)
         self.port_entry.config(state=tk.NORMAL)
-        self.record_count_label.config(text=f"기록: {len(self.recorded_rows)}줄")
+        self.record_count_label.config(text=f"기록  {len(self.recorded_rows)} 줄")
 
         if self.recorded_rows:
-            self.save_btn.config(state=tk.NORMAL, fg="white")
+            self.save_btn.config(state=tk.NORMAL, fg=T_TEXT)
             # records/ 폴더에 자동으로도 한 부 보관해둔다 (관리자 탭에서 조회용).
             auto_name = datetime.datetime.now().strftime("pressure_%Y%m%d_%H%M%S.csv")
             auto_path = os.path.join(RECORDS_DIR, auto_name)
@@ -799,10 +812,10 @@ class App:
                 item = self.data_queue.get_nowait()
 
                 if item[0] == 'error':
-                    self.status_label.config(text="● 오류", fg="#f85149")
-                    self.info_label.config(text=str(item[1])[:26])
+                    self.status_label.config(text="●  오류", fg=T_RED)
+                    self.info_label.config(text=str(item[1])[:30])
                     self.start_btn.config(state=tk.NORMAL)
-                    self.stop_btn.config(state=tk.DISABLED, bg="#4a4a4a")
+                    self.stop_btn.config(state=tk.DISABLED, bg=T_CARD, fg=T_DIM)
                     self.port_entry.config(state=tk.NORMAL)
 
                 elif item[0] == 'data':
@@ -827,21 +840,20 @@ class App:
         # 렌더링은 이번 주기에 딱 한 번. 밀린 과거 프레임은 그리지 않고 버린다.
         # (전부 그리면 렌더링이 수신 속도를 못 따라가 지연이 무한히 누적된다.)
         if latest_values is not None:
-            self.status_label.config(text="● 수신 중", fg="#3fb950")
+            self.status_label.config(text="●  수신 중", fg=T_GREEN)
             self.info_label.config(
-                text=f"index={latest_index}\ntimestamp={latest_timestamp}ms"
+                text=f"idx={latest_index}  ts={latest_timestamp}ms"
             )
             self.current_values = latest_values
             self._update_live_range(latest_values)
             self.record_count_label.config(
-                text=f"기록: {len(self.recorded_rows)}줄"
+                text=f"기록  {len(self.recorded_rows)} 줄"
             )
             try:
                 self._draw_contour(latest_values)
             except Exception as e:
-                # 렌더링 중 예외가 나도 poll_queue 자체가 멈추지 않게 방어.
-                self.status_label.config(text="● 렌더링 오류", fg="#f85149")
-                self.info_label.config(text=str(e)[:26])
+                self.status_label.config(text="●  렌더링 오류", fg=T_RED)
+                self.info_label.config(text=str(e)[:30])
 
         self.root.after(10, self.poll_queue)
 
@@ -994,11 +1006,9 @@ class App:
         if warn_channels:
             parts = [f"ch{i}({r})" for i, r in warn_channels]
             self.ch_status_label.config(
-                text="⚠ 이상 감지: " + "  ".join(parts),
-                fg="#ffcc00"
-            )
+                text="⚠  이상 감지: " + "  ".join(parts), fg=T_ORNG)
         else:
-            self.ch_status_label.config(text="● 전 채널 정상", fg="#3fb950")
+            self.ch_status_label.config(text="●  전 채널 정상", fg=T_GREEN)
 
         self.canvas_widget.draw_idle()
 
