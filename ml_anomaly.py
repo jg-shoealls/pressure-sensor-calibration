@@ -112,10 +112,18 @@ def train(csv_path, save_dir=None, print_fn=print):
     std_e  = float(errors.std())
     thresh = mean_e + 3.0 * std_e
 
+    # σ배수별 임계값 및 훈련 데이터 기준 실측 이상률
+    sigma_ks      = np.arange(1.0, 6.5, 0.5)
+    thresholds_arr = mean_e + sigma_ks * std_e
+    fp_rates      = np.array([(errors > t).mean() for t in thresholds_arr])
+
     mp = os.path.join(save_dir, MODEL_PATH)
     sp = os.path.join(save_dir, STATS_PATH)
     torch.save(model.state_dict(), mp)
-    np.savez(sp, mean_err=mean_e, std_err=std_e, threshold=thresh)
+    np.savez(sp,
+             mean_err=mean_e, std_err=std_e, threshold=thresh,
+             n_windows=len(X),
+             sigma_ks=sigma_ks, thresholds=thresholds_arr, fp_rates=fp_rates)
 
     print_fn(f"[ML] 복원오차: mean={mean_e:.6f}  std={std_e:.6f}")
     print_fn(f"[ML] 이상 임계값 (mean+3σ): {thresh:.6f}")
