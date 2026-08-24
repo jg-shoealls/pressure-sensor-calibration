@@ -69,6 +69,20 @@ T_BLUE  = "#388bfd"   # 강조
 T_ORNG  = "#d29922"   # 경고
 T_RED   = "#da3633"   # 정지/오류
 T_FIG   = "#0d1117"   # matplotlib figure 배경
+T_HDR   = "#0a0f16"   # 헤더 스트립
+
+DARK = dict(
+    BG="#0d1117", PANEL="#161b22", CARD="#21262d", BORD="#30363d",
+    TEXT="#e6edf3", DIM="#8b949e", GREEN="#238636", GRNH="#2ea043",
+    BLUE="#388bfd", ORNG="#d29922", RED="#da3633", FIG="#0d1117",
+    HDR="#0a0f16", WARN_BG="#332200", WARN_FG="#ffcc00", CAL_FG_PRESS="#ff6b6b",
+)
+LIGHT = dict(
+    BG="#f6f8fa", PANEL="#ffffff", CARD="#f0f2f5", BORD="#d0d7de",
+    TEXT="#1f2328", DIM="#636c76", GREEN="#1a7f37", GRNH="#2da44e",
+    BLUE="#0969da", ORNG="#9a6700", RED="#cf222e", FIG="#f6f8fa",
+    HDR="#24292f", WARN_BG="#fff8c5", WARN_FG="#9a6700", CAL_FG_PRESS="#cf222e",
+)
 
 
 def _hash_password(pw):
@@ -196,6 +210,10 @@ class App:
         self._ch_history   = [[] for _ in range(NUM_CHANNELS)]
         self._prev_anomaly = [None] * NUM_CHANNELS  # 직전 이상 상태 (변화 시에만 로그)
 
+        self._is_dark = True
+        self._warn_bg = DARK["WARN_BG"]; self._warn_fg = DARK["WARN_FG"]
+        self._cal_fg_press = DARK["CAL_FG_PRESS"]
+
         # --- 관리자 계정 / 기록 보관 폴더 준비 ---
         self.admin_config, is_new_config = load_or_create_admin_config()
         self.admin_authenticated = False
@@ -250,11 +268,17 @@ class App:
         hdr = tk.Frame(left, bg="#0a0f16", height=72)
         hdr.pack(fill=tk.X)
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="PRESSURE MONITOR", bg="#0a0f16", fg=T_TEXT,
+        tk.Label(hdr, text="PRESSURE MONITOR", bg=T_HDR, fg=T_TEXT,
                  font=("Consolas", 10, "bold")).place(relx=0.5, rely=0.38, anchor="center")
         tk.Label(hdr, text="1×16 ch  ·  STM32 + AD7175",
-                 bg="#0a0f16", fg=T_DIM, font=("Consolas", 7)).place(
+                 bg=T_HDR, fg=T_DIM, font=("Consolas", 7)).place(
             relx=0.5, rely=0.72, anchor="center")
+        self.theme_btn = tk.Button(
+            hdr, text="☀", bg=T_HDR, fg=T_DIM,
+            activebackground=T_HDR, activeforeground=T_TEXT,
+            relief=tk.FLAT, font=("Consolas", 13), bd=0,
+            command=self._toggle_theme)
+        self.theme_btn.place(relx=0.93, rely=0.5, anchor="center")
 
         def _sec(text):
             """섹션 헤더: 파란 레이블 + 가로 구분선"""
@@ -716,6 +740,72 @@ class App:
         for spine in ax.spines.values():
             spine.set_color(T_BORD)
 
+    def _retheme_widget(self, widget, color_map):
+        for opt in ("bg", "fg", "background", "foreground",
+                    "activebackground", "activeforeground",
+                    "insertbackground", "troughcolor", "highlightbackground"):
+            try:
+                cur = widget.cget(opt)
+                if cur in color_map:
+                    widget.config(**{opt: color_map[cur]})
+            except (tk.TclError, AttributeError):
+                pass
+        for child in widget.winfo_children():
+            self._retheme_widget(child, color_map)
+
+    def _toggle_theme(self):
+        global T_BG, T_PANEL, T_CARD, T_BORD, T_TEXT, T_DIM
+        global T_GREEN, T_GRNH, T_BLUE, T_ORNG, T_RED, T_FIG, T_HDR
+        old_t = DARK if self._is_dark else LIGHT
+        new_t = LIGHT if self._is_dark else DARK
+        self._is_dark = not self._is_dark
+
+        color_map = {v: new_t[k] for k, v in old_t.items()}
+        self._retheme_widget(self.root, color_map)
+
+        T_BG = new_t["BG"]; T_PANEL = new_t["PANEL"]; T_CARD = new_t["CARD"]
+        T_BORD = new_t["BORD"]; T_TEXT = new_t["TEXT"]; T_DIM = new_t["DIM"]
+        T_GREEN = new_t["GREEN"]; T_GRNH = new_t["GRNH"]; T_BLUE = new_t["BLUE"]
+        T_ORNG = new_t["ORNG"]; T_RED = new_t["RED"]
+        T_FIG = new_t["FIG"]; T_HDR = new_t["HDR"]
+
+        self._warn_bg = new_t["WARN_BG"]; self._warn_fg = new_t["WARN_FG"]
+        self._cal_fg_press = new_t["CAL_FG_PRESS"]
+
+        # ttk 스타일 업데이트
+        style = ttk.Style()
+        style.configure('TNotebook', background=T_BG)
+        style.configure('TNotebook.Tab', background=T_PANEL, foreground=T_DIM)
+        style.map('TNotebook.Tab',
+                  background=[('selected', T_CARD)],
+                  foreground=[('selected', T_TEXT)])
+
+        # matplotlib 메인 figure 업데이트
+        self.fig.set_facecolor(T_FIG)
+        for ax in (self.ax_raw, self.ax_cal):
+            self._style_axes(ax)
+        for cax in (self.cax_raw, self.cax_cal):
+            cax.set_facecolor(T_FIG)
+            cax.yaxis.set_tick_params(color=T_TEXT)
+            for lbl in cax.get_yticklabels():
+                lbl.set_color(T_TEXT)
+        self.canvas_widget.draw_idle()
+
+        # matplotlib 보정 figure 업데이트
+        self.cal_fig.set_facecolor(T_FIG)
+        for ax in self.cal_axes:
+            ax.set_facecolor(T_CARD)
+            title = ax.get_title()
+            ax.set_title(title, color=T_DIM, fontsize=7, pad=2)
+            ax.tick_params(colors=T_DIM, labelsize=5)
+            for spine in ax.spines.values():
+                spine.set_color(T_BORD)
+        self.cal_canvas.draw_idle()
+
+        # 토글 버튼 아이콘
+        self.theme_btn.config(text="🌙" if self._is_dark else "☀",
+                              fg=T_DIM, bg=T_HDR, activebackground=T_HDR)
+
     # ---------------- 동작 로직 ----------------
     def start_stream(self):
         port = self.port_entry.get().strip()
@@ -918,12 +1008,14 @@ class App:
 
         self.ax_raw.clear()
         self._style_axes(self.ax_raw)
+        self.ax_raw.set_title("BEFORE  /  원본", color=T_DIM, fontsize=8.5, pad=5)
         self.ax_raw.contourf(self.x_fine, self.y_axis, Z_raw,
                              levels=self.contour_levels, cmap="jet")
 
         # ── 우측: 보정 적용 (offset - raw) 또는 안내 텍스트 ────────────
         self.ax_cal.clear()
         self._style_axes(self.ax_cal)
+        self.ax_cal.set_title("AFTER  /  보정 적용", color=T_BLUE, fontsize=8.5, pad=5)
         if self.cal_offsets:
             offsets = np.array([self.cal_offsets.get(i, float(SCALE_MAX))
                                 for i in range(NUM_CHANNELS)])
@@ -981,15 +1073,15 @@ class App:
 
             if reason:
                 warn_channels.append((i, reason))
-                raw_bg, raw_fg = "#332200", "#ffcc00"
-                cal_bg, cal_fg = "#332200", "#ffcc00"
+                raw_bg, raw_fg = self._warn_bg, self._warn_fg
+                cal_bg, cal_fg = self._warn_bg, self._warn_fg
             else:
-                raw_bg, raw_fg = "#252526", "#cccccc"
+                raw_bg, raw_fg = T_CARD, T_TEXT
                 if delta is not None:
-                    cal_bg = "#252526"
-                    cal_fg = "#ff6b6b" if delta > 300 else "#4da3ff"
+                    cal_bg = T_CARD
+                    cal_fg = self._cal_fg_press if delta > 300 else T_BLUE
                 else:
-                    cal_bg, cal_fg = "#252526", "#4da3ff"
+                    cal_bg, cal_fg = T_CARD, T_BLUE
 
             # 원본 셀 갱신
             self.raw_val_labels[i].config(text=str(raw_v), bg=raw_bg, fg=raw_fg)
@@ -1051,7 +1143,7 @@ class App:
             return
         self.cal_loaded_label.config(
             text=f"{os.path.basename(filepath)}\n({len(self.cal_offsets)}채널)",
-            fg="#4da3ff"
+            fg=T_BLUE
         )
         try:
             self._draw_contour(self.current_values, force=True)
@@ -1077,7 +1169,7 @@ class App:
             return
         self.cal_loaded_label.config(
             text=f"보정 탭에서 계산됨\n({len(self.cal_offsets)}채널)",
-            fg="#4da3ff"
+            fg=T_BLUE
         )
         try:
             self._draw_contour(self.current_values, force=True)
@@ -1090,82 +1182,82 @@ class App:
         self.cal_filepath = ""
         self.cal_offsets = {}
 
-        left = tk.Frame(parent, bg="#252526", width=220)
+        left = tk.Frame(parent, bg=T_PANEL, width=220)
         left.pack(side=tk.LEFT, fill=tk.Y)
         left.pack_propagate(False)
 
-        tk.Label(left, text="압력 보정", bg="#252526", fg="white",
+        tk.Label(left, text="압력 보정", bg=T_PANEL, fg=T_TEXT,
                  font=("맑은 고딕", 14, "bold")).pack(pady=(20, 6))
         tk.Label(left, text="무압력 상태에서 기록한 CSV로\n채널별 영점 오프셋을 계산합니다.",
-                 bg="#252526", fg="#888888", font=("맑은 고딕", 8),
+                 bg=T_PANEL, fg=T_DIM, font=("맑은 고딕", 8),
                  justify="center").pack(pady=(0, 10))
-        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(0, 12))
+        tk.Frame(left, bg=T_BORD, height=1).pack(fill=tk.X, padx=20, pady=(0, 12))
 
-        tk.Label(left, text="① CSV 업로드", bg="#252526", fg="#aaaaaa",
+        tk.Label(left, text="① CSV 업로드", bg=T_PANEL, fg=T_DIM,
                  font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20)
         tk.Button(
             left, text="CSV 업로드", font=("맑은 고딕", 11, "bold"),
-            bg="#2a6eaa", fg="white", activebackground="#3a7eba",
+            bg=T_BLUE, fg=T_TEXT, activebackground=T_GRNH,
             relief=tk.FLAT, height=2, command=self._upload_cal_csv
         ).pack(padx=20, pady=(4, 4), fill=tk.X)
 
         self.cal_file_label = tk.Label(
-            left, text="파일이 선택되지 않음", bg="#252526", fg="#666666",
+            left, text="파일이 선택되지 않음", bg=T_PANEL, fg=T_DIM,
             font=("Consolas", 8), wraplength=180, justify="left"
         )
         self.cal_file_label.pack(anchor="w", padx=20, pady=(0, 6))
 
         tk.Button(
             left, text="샘플 CSV 생성", font=("맑은 고딕", 9),
-            bg="#3a3a3a", fg="#aaaaaa", relief=tk.FLAT,
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD, relief=tk.FLAT,
             command=self._generate_sample_csv
         ).pack(padx=20, pady=(0, 14), fill=tk.X)
 
-        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(0, 12))
+        tk.Frame(left, bg=T_BORD, height=1).pack(fill=tk.X, padx=20, pady=(0, 12))
 
-        tk.Label(left, text="② 보정 실행", bg="#252526", fg="#aaaaaa",
+        tk.Label(left, text="② 보정 실행", bg=T_PANEL, fg=T_DIM,
                  font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20)
         self.cal_run_btn = tk.Button(
             left, text="보  정", font=("맑은 고딕", 13, "bold"),
-            bg="#4a4a4a", fg="#888888", activebackground="#5a5a5a",
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
             relief=tk.FLAT, height=2, state=tk.DISABLED,
             command=self._run_calibration
         )
         self.cal_run_btn.pack(padx=20, pady=(4, 14), fill=tk.X)
 
-        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(0, 10))
+        tk.Frame(left, bg=T_BORD, height=1).pack(fill=tk.X, padx=20, pady=(0, 10))
 
-        tk.Label(left, text="채널별 평균값 (영점 기준)", bg="#252526", fg="#aaaaaa",
+        tk.Label(left, text="채널별 평균값 (영점 기준)", bg=T_PANEL, fg=T_DIM,
                  font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20, pady=(0, 4))
         self.cal_result_text = tk.Text(
-            left, font=("Consolas", 8), bg="#1a1a1a", fg="#cccccc",
+            left, font=("Consolas", 8), bg=T_BG, fg=T_TEXT,
             relief=tk.FLAT, height=17, state=tk.DISABLED
         )
         self.cal_result_text.pack(padx=20, pady=(0, 8), fill=tk.X)
 
         self.cal_save_btn = tk.Button(
             left, text="보정값 저장 (JSON)", font=("맑은 고딕", 10, "bold"),
-            bg="#4a4a4a", fg="#888888", relief=tk.FLAT,
+            bg=T_CARD, fg=T_DIM, relief=tk.FLAT,
             state=tk.DISABLED, command=self._save_calibration
         )
         self.cal_save_btn.pack(padx=20, pady=(0, 20), fill=tk.X)
 
-        right = tk.Frame(parent, bg="#1e1e1e")
+        right = tk.Frame(parent, bg=T_BG)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         tk.Label(right, text="채널별 데이터  ━  파랑: 원본값  /  빨강 점선: 평균(오프셋)",
-                 bg="#1e1e1e", fg="#aaaaaa",
+                 bg=T_BG, fg=T_DIM,
                  font=("맑은 고딕", 9)).pack(pady=(12, 4))
 
-        self.cal_fig = Figure(figsize=(7.2, 5.6), dpi=90, facecolor="#1e1e1e")
+        self.cal_fig = Figure(figsize=(7.2, 5.6), dpi=90, facecolor=T_FIG)
         self.cal_axes = []
         for i in range(NUM_CHANNELS):
             ax = self.cal_fig.add_subplot(4, 4, i + 1)
-            ax.set_facecolor("#252526")
-            ax.set_title(f"ch{i}", color="#aaaaaa", fontsize=7, pad=2)
-            ax.tick_params(colors="#777777", labelsize=5)
+            ax.set_facecolor(T_CARD)
+            ax.set_title(f"ch{i}", color=T_DIM, fontsize=7, pad=2)
+            ax.tick_params(colors=T_DIM, labelsize=5)
             for spine in ax.spines.values():
-                spine.set_color("#444444")
+                spine.set_color(T_BORD)
             self.cal_axes.append(ax)
 
         self.cal_fig.tight_layout(pad=0.8, h_pad=1.2, w_pad=0.5)
@@ -1192,9 +1284,9 @@ class App:
         self.cal_filepath = filepath
         self.cal_file_label.config(
             text=f"{os.path.basename(filepath)}\n({len(self.cal_data)}줄)",
-            fg="#4da3ff"
+            fg=T_BLUE
         )
-        self.cal_run_btn.config(state=tk.NORMAL, bg="#c67a00", fg="white")
+        self.cal_run_btn.config(state=tk.NORMAL, bg=T_ORNG, fg=T_TEXT)
 
     def _generate_sample_csv(self):
         save_path = filedialog.asksaveasfilename(
@@ -1252,16 +1344,16 @@ class App:
         # 16채널 그래프 그리기
         for i, ax in enumerate(self.cal_axes):
             ax.clear()
-            ax.set_facecolor("#252526")
+            ax.set_facecolor(T_CARD)
             arr = np.array(channels[i])
             mean_val = self.cal_offsets[i]
 
-            ax.plot(elapsed, arr, color="#4da3ff", linewidth=0.8, alpha=0.9)
-            ax.axhline(mean_val, color="#ff6b6b", linewidth=1.2, linestyle="--")
-            ax.set_title(f"ch{i}  {mean_val:.0f}", color="#cccccc", fontsize=6.5, pad=2)
-            ax.tick_params(colors="#777777", labelsize=5)
+            ax.plot(elapsed, arr, color=T_BLUE, linewidth=0.8, alpha=0.9)
+            ax.axhline(mean_val, color=T_RED, linewidth=1.2, linestyle="--")
+            ax.set_title(f"ch{i}  {mean_val:.0f}", color=T_TEXT, fontsize=6.5, pad=2)
+            ax.tick_params(colors=T_DIM, labelsize=5)
             for spine in ax.spines.values():
-                spine.set_color("#444444")
+                spine.set_color(T_BORD)
             margin = max(200, float(np.std(arr)) * 4)
             ax.set_ylim(
                 max(0, mean_val - margin),
@@ -1278,7 +1370,7 @@ class App:
         self.cal_result_text.insert("1.0", "\n".join(lines))
         self.cal_result_text.config(state=tk.DISABLED)
 
-        self.cal_save_btn.config(state=tk.NORMAL, bg="#2ea043", fg="white")
+        self.cal_save_btn.config(state=tk.NORMAL, bg=T_GREEN, fg=T_TEXT)
         self._sync_cal_offsets_from_tab()
         messagebox.showinfo(
             "보정 완료",
