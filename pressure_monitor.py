@@ -196,12 +196,15 @@ class App:
 
         measuring_tab = tk.Frame(self.notebook, bg="#1e1e1e")
         admin_tab = tk.Frame(self.notebook, bg="#1e1e1e")
+        calibration_tab = tk.Frame(self.notebook, bg="#1e1e1e")
         self.notebook.add(measuring_tab, text="측정")
         self.notebook.add(admin_tab, text="관리자")
+        self.notebook.add(calibration_tab, text="보정")
 
         self._build_left_panel(measuring_tab)
         self._build_right_panel(measuring_tab)
         self._build_admin_tab(admin_tab)
+        self._build_calibration_tab(calibration_tab)
 
         self.root.after(10, self.poll_queue)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -853,6 +856,230 @@ class App:
         # 여기서는 절대 건드리지 않는다 (건드릴수록 오히려 문제가 생긴다).
 
         self.canvas_widget.draw_idle()
+
+    # ---------------- 보정 탭 ----------------
+    def _build_calibration_tab(self, parent):
+        self.cal_data = []
+        self.cal_filepath = ""
+        self.cal_offsets = {}
+
+        left = tk.Frame(parent, bg="#252526", width=220)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        left.pack_propagate(False)
+
+        tk.Label(left, text="압력 보정", bg="#252526", fg="white",
+                 font=("맑은 고딕", 14, "bold")).pack(pady=(20, 6))
+        tk.Label(left, text="무압력 상태에서 기록한 CSV로\n채널별 영점 오프셋을 계산합니다.",
+                 bg="#252526", fg="#888888", font=("맑은 고딕", 8),
+                 justify="center").pack(pady=(0, 10))
+        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(0, 12))
+
+        tk.Label(left, text="① CSV 업로드", bg="#252526", fg="#aaaaaa",
+                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20)
+        tk.Button(
+            left, text="CSV 업로드", font=("맑은 고딕", 11, "bold"),
+            bg="#2a6eaa", fg="white", activebackground="#3a7eba",
+            relief=tk.FLAT, height=2, command=self._upload_cal_csv
+        ).pack(padx=20, pady=(4, 4), fill=tk.X)
+
+        self.cal_file_label = tk.Label(
+            left, text="파일이 선택되지 않음", bg="#252526", fg="#666666",
+            font=("Consolas", 8), wraplength=180, justify="left"
+        )
+        self.cal_file_label.pack(anchor="w", padx=20, pady=(0, 6))
+
+        tk.Button(
+            left, text="샘플 CSV 생성", font=("맑은 고딕", 9),
+            bg="#3a3a3a", fg="#aaaaaa", relief=tk.FLAT,
+            command=self._generate_sample_csv
+        ).pack(padx=20, pady=(0, 14), fill=tk.X)
+
+        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(0, 12))
+
+        tk.Label(left, text="② 보정 실행", bg="#252526", fg="#aaaaaa",
+                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20)
+        self.cal_run_btn = tk.Button(
+            left, text="보  정", font=("맑은 고딕", 13, "bold"),
+            bg="#4a4a4a", fg="#888888", activebackground="#5a5a5a",
+            relief=tk.FLAT, height=2, state=tk.DISABLED,
+            command=self._run_calibration
+        )
+        self.cal_run_btn.pack(padx=20, pady=(4, 14), fill=tk.X)
+
+        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(0, 10))
+
+        tk.Label(left, text="채널별 평균값 (영점 기준)", bg="#252526", fg="#aaaaaa",
+                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20, pady=(0, 4))
+        self.cal_result_text = tk.Text(
+            left, font=("Consolas", 8), bg="#1a1a1a", fg="#cccccc",
+            relief=tk.FLAT, height=17, state=tk.DISABLED
+        )
+        self.cal_result_text.pack(padx=20, pady=(0, 8), fill=tk.X)
+
+        self.cal_save_btn = tk.Button(
+            left, text="보정값 저장 (JSON)", font=("맑은 고딕", 10, "bold"),
+            bg="#4a4a4a", fg="#888888", relief=tk.FLAT,
+            state=tk.DISABLED, command=self._save_calibration
+        )
+        self.cal_save_btn.pack(padx=20, pady=(0, 20), fill=tk.X)
+
+        right = tk.Frame(parent, bg="#1e1e1e")
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        tk.Label(right, text="채널별 데이터  ━  파랑: 원본값  /  빨강 점선: 평균(오프셋)",
+                 bg="#1e1e1e", fg="#aaaaaa",
+                 font=("맑은 고딕", 9)).pack(pady=(12, 4))
+
+        self.cal_fig = Figure(figsize=(7.2, 5.6), dpi=90, facecolor="#1e1e1e")
+        self.cal_axes = []
+        for i in range(NUM_CHANNELS):
+            ax = self.cal_fig.add_subplot(4, 4, i + 1)
+            ax.set_facecolor("#252526")
+            ax.set_title(f"ch{i}", color="#aaaaaa", fontsize=7, pad=2)
+            ax.tick_params(colors="#777777", labelsize=5)
+            for spine in ax.spines.values():
+                spine.set_color("#444444")
+            self.cal_axes.append(ax)
+
+        self.cal_fig.tight_layout(pad=0.8, h_pad=1.2, w_pad=0.5)
+        self.cal_canvas = FigureCanvasTkAgg(self.cal_fig, master=right)
+        self.cal_canvas.get_tk_widget().pack(pady=4, padx=10, fill=tk.BOTH, expand=True)
+        self.cal_canvas.draw()
+
+    def _upload_cal_csv(self):
+        filepath = filedialog.askopenfilename(
+            title="보정용 CSV 선택",
+            filetypes=[("CSV 파일", "*.csv"), ("모든 파일", "*.*")]
+        )
+        if not filepath:
+            return
+        try:
+            with open(filepath, "r", encoding="utf-8-sig") as f:
+                self.cal_data = list(csv.DictReader(f))
+        except Exception as e:
+            messagebox.showerror("파일 오류", str(e))
+            return
+        if not self.cal_data:
+            messagebox.showwarning("빈 파일", "데이터가 없는 CSV입니다.")
+            return
+        self.cal_filepath = filepath
+        self.cal_file_label.config(
+            text=f"{os.path.basename(filepath)}\n({len(self.cal_data)}줄)",
+            fg="#4da3ff"
+        )
+        self.cal_run_btn.config(state=tk.NORMAL, bg="#c67a00", fg="white")
+
+    def _generate_sample_csv(self):
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile="calibration_sample.csv",
+            filetypes=[("CSV 파일", "*.csv")]
+        )
+        if not save_path:
+            return
+        rng = np.random.default_rng(42)
+        # 채널마다 다른 베이스라인으로 실제 센서 특성 모사
+        baselines = rng.integers(2800, 3800, size=NUM_CHANNELS)
+        n_rows = 200
+        header = ["index", "elapsed_ms", "raw_timestamp_ms"] + [f"ch{i}" for i in range(NUM_CHANNELS)]
+        rows = []
+        for idx in range(n_rows):
+            elapsed = idx * 10
+            values = [int(np.clip(baselines[ch] + rng.normal(0, 40), 0, 4095))
+                      for ch in range(NUM_CHANNELS)]
+            rows.append([idx, elapsed, 1000 + elapsed] + values)
+        try:
+            with open(save_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                writer.writerows(rows)
+            messagebox.showinfo("생성 완료", f"샘플 CSV 생성됨:\n{save_path}")
+        except OSError as e:
+            messagebox.showerror("저장 실패", str(e))
+
+    def _run_calibration(self):
+        if not self.cal_data:
+            return
+
+        elapsed_list = []
+        channels = {i: [] for i in range(NUM_CHANNELS)}
+        for row in self.cal_data:
+            try:
+                elapsed_list.append(float(row["elapsed_ms"]))
+                for i in range(NUM_CHANNELS):
+                    channels[i].append(float(row[f"ch{i}"]))
+            except (KeyError, ValueError):
+                continue
+
+        if not elapsed_list:
+            messagebox.showwarning("파싱 오류", "데이터를 읽을 수 없습니다. CSV 헤더를 확인하세요.")
+            return
+
+        elapsed = np.array(elapsed_list)
+
+        # 채널별 평균 계산 → 영점 오프셋
+        self.cal_offsets = {}
+        for i in range(NUM_CHANNELS):
+            self.cal_offsets[i] = float(np.mean(channels[i]))
+
+        # 16채널 그래프 그리기
+        for i, ax in enumerate(self.cal_axes):
+            ax.clear()
+            ax.set_facecolor("#252526")
+            arr = np.array(channels[i])
+            mean_val = self.cal_offsets[i]
+
+            ax.plot(elapsed, arr, color="#4da3ff", linewidth=0.8, alpha=0.9)
+            ax.axhline(mean_val, color="#ff6b6b", linewidth=1.2, linestyle="--")
+            ax.set_title(f"ch{i}  {mean_val:.0f}", color="#cccccc", fontsize=6.5, pad=2)
+            ax.tick_params(colors="#777777", labelsize=5)
+            for spine in ax.spines.values():
+                spine.set_color("#444444")
+            margin = max(200, float(np.std(arr)) * 4)
+            ax.set_ylim(
+                max(0, mean_val - margin),
+                min(4095, mean_val + margin)
+            )
+
+        self.cal_fig.tight_layout(pad=0.8, h_pad=1.0, w_pad=0.5)
+        self.cal_canvas.draw()
+
+        # 결과 텍스트
+        self.cal_result_text.config(state=tk.NORMAL)
+        self.cal_result_text.delete("1.0", tk.END)
+        lines = [f"ch{i:2d}: {self.cal_offsets[i]:8.1f}" for i in range(NUM_CHANNELS)]
+        self.cal_result_text.insert("1.0", "\n".join(lines))
+        self.cal_result_text.config(state=tk.DISABLED)
+
+        self.cal_save_btn.config(state=tk.NORMAL, bg="#2ea043", fg="white")
+        messagebox.showinfo(
+            "보정 완료",
+            f"16채널 보정 완료\n\n"
+            f"그래프: 파랑=원본 / 빨강점선=평균(오프셋)\n"
+            f"'보정값 저장' 버튼으로 JSON에 저장하세요."
+        )
+
+    def _save_calibration(self):
+        if not self.cal_offsets:
+            return
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            initialfile="calibration.json",
+            filetypes=[("JSON 파일", "*.json"), ("모든 파일", "*.*")]
+        )
+        if not save_path:
+            return
+        cal_data = {
+            "offsets": {str(i): self.cal_offsets[i] for i in range(NUM_CHANNELS)},
+            "source_file": os.path.basename(self.cal_filepath),
+            "created_at": datetime.datetime.now().isoformat()
+        }
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(cal_data, f, ensure_ascii=False, indent=2)
+            messagebox.showinfo("저장 완료", f"보정값 저장됨:\n{save_path}")
+        except OSError as e:
+            messagebox.showerror("저장 실패", str(e))
 
     def on_close(self):
         if self.reader:
