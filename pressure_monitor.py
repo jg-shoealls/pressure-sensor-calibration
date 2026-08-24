@@ -215,6 +215,14 @@ class App:
         self._cal_fg_press = DARK["CAL_FG_PRESS"]
         self.cmap_name = "jet"
 
+        # ── 재생(Playback) 상태 ─────────────────────────────────────────
+        self._pb_frames = []      # list of [ch0..ch15]
+        self._pb_idx = 0
+        self._pb_playing = False
+        self._pb_after_id = None
+        self._pb_speed = 1.0
+        self._pb_seeking = False  # 슬라이더 프로그래밍 세트 시 콜백 억제
+
         # --- 관리자 계정 / 기록 보관 폴더 준비 ---
         self.admin_config, is_new_config = load_or_create_admin_config()
         self.admin_authenticated = False
@@ -418,6 +426,62 @@ class App:
         tk.Label(left, text="우측 컨투어에 자동 반영",
                  bg=T_PANEL, fg=T_DIM, font=("Consolas", 6)
                  ).pack(anchor="w", padx=14, pady=(2, 0))
+
+        # ── PLAYBACK ─────────────────────────────────────────────────
+        _sec("PLAYBACK")
+
+        pb_top = tk.Frame(left, bg=T_PANEL)
+        pb_top.pack(fill=tk.X, padx=14, pady=(0, 3))
+        tk.Button(
+            pb_top, text="CSV 불러오기", font=("맑은 고딕", 8),
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+            relief=tk.FLAT, pady=4, command=self._pb_load
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._pb_file_label = tk.Label(
+            left, text="파일 없음", bg=T_PANEL, fg=T_DIM,
+            font=("Consolas", 6), wraplength=215, justify="left")
+        self._pb_file_label.pack(anchor="w", padx=14)
+
+        self._pb_frame_label = tk.Label(
+            left, text="프레임  –", bg=T_PANEL, fg=T_DIM,
+            font=("Consolas", 7))
+        self._pb_frame_label.pack(anchor="w", padx=14, pady=(2, 0))
+
+        self._pb_slider = tk.Scale(
+            left, from_=0, to=0, orient=tk.HORIZONTAL,
+            bg=T_PANEL, fg=T_BLUE, troughcolor=T_BORD,
+            highlightthickness=0, showvalue=False, sliderrelief=tk.FLAT,
+            state=tk.DISABLED, command=self._pb_seek)
+        self._pb_slider.pack(fill=tk.X, padx=14, pady=(1, 4))
+
+        ctrl = tk.Frame(left, bg=T_PANEL)
+        ctrl.pack(fill=tk.X, padx=14, pady=(0, 10))
+        self._pb_play_btn = tk.Button(
+            ctrl, text="▶", font=("맑은 고딕", 9, "bold"),
+            bg=T_GREEN, fg=T_TEXT, activebackground=T_GRNH,
+            relief=tk.FLAT, pady=4, state=tk.DISABLED,
+            command=self._pb_toggle_play)
+        self._pb_play_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+        self._pb_stop_btn = tk.Button(
+            ctrl, text="■", font=("맑은 고딕", 9, "bold"),
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+            relief=tk.FLAT, pady=4, state=tk.DISABLED,
+            command=self._pb_stop)
+        self._pb_stop_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self._pb_speed_var = tk.StringVar(value="1×")
+        pb_speed_menu = tk.OptionMenu(
+            ctrl, self._pb_speed_var,
+            "0.5×", "1×", "2×", "5×", "10×",
+            command=self._on_pb_speed)
+        pb_speed_menu.config(
+            bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+            activeforeground=T_TEXT, relief=tk.FLAT,
+            font=("Consolas", 7), bd=0, highlightthickness=0, width=3)
+        pb_speed_menu["menu"].config(
+            bg=T_CARD, fg=T_TEXT,
+            activebackground=T_BLUE, activeforeground=T_TEXT)
+        pb_speed_menu.pack(side=tk.LEFT)
 
     # ---------------- 오른쪽: 원본 | 보정 적용 2분할 컨투어 ----------------
     def _build_right_panel(self, parent):
@@ -826,6 +890,113 @@ class App:
         # 토글 버튼 아이콘
         self.theme_btn.config(text="🌙" if self._is_dark else "☀",
                               fg=T_DIM, bg=T_HDR, activebackground=T_HDR)
+
+    # ---------------- 재생(Playback) 로직 ----------------
+    def _pb_load(self):
+        filepath = filedialog.askopenfilename(
+            title="재생할 CSV 선택",
+            filetypes=[("CSV 파일", "*.csv"), ("모든 파일", "*.*")]
+        )
+        if not filepath:
+            return
+        try:
+            with open(filepath, newline="", encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+        except Exception as e:
+            messagebox.showerror("파일 오류", str(e))
+            return
+        if not rows:
+            messagebox.showwarning("빈 파일", "데이터가 없습니다.")
+            return
+        frames = []
+        for row in rows:
+            try:
+                frames.append([float(row[f"ch{i}"]) for i in range(NUM_CHANNELS)])
+            except (KeyError, ValueError):
+                continue
+        if not frames:
+            messagebox.showwarning("파싱 실패", "ch0~ch15 컬럼을 찾을 수 없습니다.")
+            return
+        self._pb_stop()
+        self._pb_frames = frames
+        self._pb_idx = 0
+        total = len(frames)
+        self._pb_slider.config(to=max(0, total - 1), state=tk.NORMAL)
+        self._pb_seeking = True
+        self._pb_slider.set(0)
+        self._pb_seeking = False
+        self._pb_play_btn.config(state=tk.NORMAL)
+        self._pb_stop_btn.config(state=tk.NORMAL)
+        self._pb_file_label.config(
+            text=os.path.basename(filepath), fg=T_BLUE)
+        self._pb_frame_label.config(text=f"프레임  1 / {total}")
+        self._pb_show_frame(0)
+
+    def _pb_toggle_play(self):
+        if not self._pb_frames:
+            return
+        if self._pb_playing:
+            self._pb_playing = False
+            self._pb_play_btn.config(text="▶")
+        else:
+            if self._pb_idx >= len(self._pb_frames) - 1:
+                self._pb_idx = 0
+            self._pb_playing = True
+            self._pb_play_btn.config(text="⏸")
+            self._pb_tick()
+
+    def _pb_stop(self):
+        self._pb_playing = False
+        if self._pb_after_id:
+            self.root.after_cancel(self._pb_after_id)
+            self._pb_after_id = None
+        if hasattr(self, "_pb_play_btn"):
+            self._pb_play_btn.config(text="▶")
+        if self._pb_frames:
+            self._pb_idx = 0
+            self._pb_seeking = True
+            self._pb_slider.set(0)
+            self._pb_seeking = False
+            total = len(self._pb_frames)
+            self._pb_frame_label.config(text=f"프레임  1 / {total}")
+            self._pb_show_frame(0)
+
+    def _pb_tick(self):
+        if not self._pb_playing:
+            return
+        if self._pb_idx >= len(self._pb_frames) - 1:
+            self._pb_playing = False
+            self._pb_play_btn.config(text="▶")
+            return
+        self._pb_idx += 1
+        self._pb_seeking = True
+        self._pb_slider.set(self._pb_idx)
+        self._pb_seeking = False
+        total = len(self._pb_frames)
+        self._pb_frame_label.config(text=f"프레임  {self._pb_idx + 1} / {total}")
+        self._pb_show_frame(self._pb_idx)
+        delay = max(5, int(10 / self._pb_speed))
+        self._pb_after_id = self.root.after(delay, self._pb_tick)
+
+    def _pb_seek(self, val):
+        if self._pb_seeking or not self._pb_frames:
+            return
+        idx = int(float(val))
+        self._pb_idx = idx
+        total = len(self._pb_frames)
+        self._pb_frame_label.config(text=f"프레임  {idx + 1} / {total}")
+        self._pb_show_frame(idx)
+
+    def _pb_show_frame(self, idx):
+        if not self._pb_frames:
+            return
+        vals = self._pb_frames[idx]
+        self.current_values = list(vals)
+        self._draw_contour(vals, force=True)
+
+    def _on_pb_speed(self, val):
+        mapping = {"0.5×": 0.5, "1×": 1.0, "2×": 2.0, "5×": 5.0, "10×": 10.0}
+        self._pb_speed = mapping.get(val, 1.0)
 
     def _on_cmap_change(self, cmap_name):
         from matplotlib.cm import ScalarMappable
@@ -1439,6 +1610,7 @@ class App:
             messagebox.showerror("저장 실패", str(e))
 
     def on_close(self):
+        self._pb_stop()
         if self.reader:
             self.reader.stop()
         self.root.destroy()
