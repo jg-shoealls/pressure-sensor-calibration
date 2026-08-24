@@ -348,7 +348,7 @@ class App:
                  bg=T_CARD, fg=T_DIM, font=("Consolas", 6)).pack(
             anchor="w", padx=10, pady=(0, 7))
 
-        # 컬러맵 선택
+        # 컬러맵 선택 (미리보기 팝업)
         cmap_card = tk.Frame(left, bg=T_CARD,
                              highlightbackground=T_BORD, highlightthickness=1)
         cmap_card.pack(padx=14, pady=(0, 6), fill=tk.X)
@@ -356,16 +356,13 @@ class App:
         cmap_hdr.pack(fill=tk.X, padx=10, pady=(6, 5))
         tk.Label(cmap_hdr, text="컬러맵", bg=T_CARD, fg=T_DIM,
                  font=("Consolas", 8)).pack(side=tk.LEFT)
-        _CMAPS = ["jet", "hot", "cool", "viridis", "plasma", "inferno", "RdYlBu_r"]
-        self._cmap_var = tk.StringVar(value="jet")
-        cmap_menu = tk.OptionMenu(cmap_hdr, self._cmap_var, *_CMAPS,
-                                  command=self._on_cmap_change)
-        cmap_menu.config(bg=T_CARD, fg=T_BLUE, activebackground=T_BORD,
-                         activeforeground=T_TEXT, relief=tk.FLAT,
-                         font=("Consolas", 8), bd=0, highlightthickness=0)
-        cmap_menu["menu"].config(bg=T_CARD, fg=T_TEXT,
-                                 activebackground=T_BLUE, activeforeground=T_TEXT)
-        cmap_menu.pack(side=tk.RIGHT)
+        self._cmap_btn = tk.Button(
+            cmap_hdr, text=f"{self.cmap_name}  ▾",
+            bg=T_CARD, fg=T_BLUE, activebackground=T_BORD,
+            activeforeground=T_TEXT, relief=tk.FLAT,
+            font=("Consolas", 8), bd=0, highlightthickness=0,
+            command=self._open_cmap_popup)
+        self._cmap_btn.pack(side=tk.RIGHT)
 
         self.reset_btn = tk.Button(
             left, text="실시간 범위 초기화", font=("맑은 고딕", 8),
@@ -997,6 +994,96 @@ class App:
     def _on_pb_speed(self, val):
         mapping = {"0.5×": 0.5, "1×": 1.0, "2×": 2.0, "5×": 5.0, "10×": 10.0}
         self._pb_speed = mapping.get(val, 1.0)
+
+    # ---------------- 컬러맵 미리보기 팝업 ----------------
+    _CMAPS = ["jet", "hot", "cool", "viridis", "plasma", "inferno", "RdYlBu_r"]
+
+    def _make_cmap_photo(self, cmap_name, width, height):
+        import tempfile
+        try:
+            cmap = matplotlib.colormaps[cmap_name]
+        except AttributeError:
+            cmap = matplotlib.cm.get_cmap(cmap_name)
+        arr = np.linspace(0, 1, width)
+        rgb = (cmap(arr)[:, :3] * 255).astype(np.uint8)
+        ppm = f"P6\n{width} {height}\n255\n".encode() + rgb.tobytes() * height
+        tmp = tempfile.NamedTemporaryFile(suffix=".ppm", delete=False)
+        try:
+            tmp.write(ppm)
+            tmp.close()
+            photo = tk.PhotoImage(file=tmp.name)
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        return photo
+
+    def _open_cmap_popup(self):
+        if hasattr(self, "_cmap_popup") and self._cmap_popup.winfo_exists():
+            self._cmap_popup.lift()
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("컬러맵 선택")
+        popup.configure(bg=T_BG)
+        popup.resizable(False, False)
+        self._cmap_popup = popup
+
+        IMG_W, IMG_H = 180, 18
+
+        tk.Label(popup, text="컬러맵 미리보기",
+                 bg=T_BG, fg=T_TEXT, font=("맑은 고딕", 11, "bold")
+                 ).pack(pady=(14, 10), padx=24)
+
+        photos = []
+        for cmap_name in self._CMAPS:
+            photo = self._make_cmap_photo(cmap_name, IMG_W, IMG_H)
+            photos.append(photo)
+            is_sel = (cmap_name == self.cmap_name)
+            row_bg = T_CARD if is_sel else T_BG
+
+            row = tk.Frame(popup, bg=row_bg, cursor="hand2")
+            row.pack(fill=tk.X, padx=16, pady=2)
+
+            name_lbl = tk.Label(row, text=cmap_name, bg=row_bg, fg=T_TEXT,
+                                font=("Consolas", 9), width=11, anchor="w")
+            name_lbl.pack(side=tk.LEFT, padx=(10, 6), pady=6)
+
+            cnv = tk.Canvas(row, width=IMG_W, height=IMG_H,
+                            bg=row_bg, highlightthickness=2 if is_sel else 0,
+                            highlightbackground=T_BLUE)
+            cnv.pack(side=tk.LEFT, pady=6, padx=(0, 10))
+            cnv.create_image(0, 0, anchor="nw", image=photo)
+
+            def on_select(e, name=cmap_name):
+                self._on_cmap_change(name)
+                self._cmap_btn.config(text=f"{name}  ▾", fg=T_BLUE)
+                popup.destroy()
+
+            def on_enter(e, r=row, nl=name_lbl, c=cnv):
+                r.config(bg=T_PANEL); nl.config(bg=T_PANEL); c.config(bg=T_PANEL)
+
+            def on_leave(e, r=row, nl=name_lbl, c=cnv, sel=(cmap_name == self.cmap_name)):
+                bg = T_CARD if sel else T_BG
+                r.config(bg=bg); nl.config(bg=bg); c.config(bg=bg)
+
+            for w in (row, name_lbl, cnv):
+                w.bind("<Button-1>", on_select)
+                w.bind("<Enter>", on_enter)
+                w.bind("<Leave>", on_leave)
+
+        popup.photos = photos  # GC 방지
+
+        tk.Button(popup, text="닫기", font=("맑은 고딕", 9),
+                  bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
+                  relief=tk.FLAT, pady=5,
+                  command=popup.destroy).pack(pady=(10, 14), padx=16, fill=tk.X)
+
+        popup.update_idletasks()
+        px = self.root.winfo_x() + (self.root.winfo_width() - popup.winfo_width()) // 2
+        py = self.root.winfo_y() + (self.root.winfo_height() - popup.winfo_height()) // 2
+        popup.geometry(f"+{px}+{py}")
 
     def _on_cmap_change(self, cmap_name):
         from matplotlib.cm import ScalarMappable
