@@ -642,6 +642,20 @@ class App:
             lbl.grid(row=2, column=i + 1, padx=1, pady=1)
             self.cal_val_labels.append(lbl)
 
+        # ── ML 채널 기여도 행 ─────────────────────────────────────────
+        tk.Label(tbl, text="ERR", bg=T_BG, fg=T_RED,
+                 font=FONT, width=4).grid(row=3, column=0, padx=1, pady=1)
+        self._ml_contrib_labels = []
+        _DEAD_SET = set(range(NUM_CHANNELS)) - set(ML_ACTIVE_CH)
+        for i in range(NUM_CHANNELS):
+            is_dead = i in _DEAD_SET
+            lbl = tk.Label(tbl,
+                           text="─" if is_dead else "·",
+                           bg=T_BORD if is_dead else T_CARD,
+                           fg=T_DIM, font=FONT, width=COL_W)
+            lbl.grid(row=3, column=i + 1, padx=1, pady=1)
+            self._ml_contrib_labels.append(lbl)
+
         # ── 채널 상태 바 ──────────────────────────────────────────────
         self.ch_status_label = tk.Label(
             right, text="●  전 채널 정상",
@@ -1027,8 +1041,16 @@ class App:
         pressure = (4095 - active) / 4095.0
         t = torch.from_numpy(pressure).unsqueeze(0)  # (1, 30, 12)
         with torch.no_grad():
-            pred  = self._ml_model(t)
-            score = float(((pred - t) ** 2).mean())
+            pred    = self._ml_model(t)
+            sq_err  = (pred - t) ** 2              # (1, 30, 12)
+            score   = float(sq_err.mean())
+            ch_err  = sq_err.mean(dim=(0, 1)).numpy()   # (12,) per active channel
+
+        # 16채널 기여도 배열 구성 (사망 채널 = 0)
+        contrib16 = np.zeros(NUM_CHANNELS, dtype=float)
+        for ai, ci in enumerate(ML_ACTIVE_CH):
+            contrib16[ci] = float(ch_err[ai])
+
         self._ml_score = score
         thresh     = self._ml_threshold
         is_anomaly = score > thresh
@@ -1042,11 +1064,41 @@ class App:
             text=f"ML: {score:.4f} / {thresh:.4f}  {tag}  [{self._ml_sigma_k:.1f}σ]",
             fg=T_RED if is_anomaly else T_DIM)
 
+        # 채널 기여도 히트맵 갱신
+        self._update_ml_contrib(contrib16, is_anomaly)
+
         # 상태 변화 시에만 로그 기록 (매 프레임 기록 방지)
         if is_anomaly != self._ml_was_anomaly:
             event = "감지" if is_anomaly else "복구"
             self._log_ml_anomaly(event, score, raw[-1])
             self._ml_was_anomaly = is_anomaly
+
+    @staticmethod
+    def _lerp_color(c1, c2, t):
+        """두 hex 색상 사이를 t(0~1)로 선형 보간."""
+        c1 = c1.lstrip('#'); c2 = c2.lstrip('#')
+        r = int(int(c1[0:2], 16) * (1 - t) + int(c2[0:2], 16) * t)
+        g = int(int(c1[2:4], 16) * (1 - t) + int(c2[2:4], 16) * t)
+        b = int(int(c1[4:6], 16) * (1 - t) + int(c2[4:6], 16) * t)
+        return f'#{r:02x}{g:02x}{b:02x}'
+
+    _DEAD_SET = set(range(NUM_CHANNELS)) - set(ML_ACTIVE_CH)
+    _BAR_CHARS = " ·▁▄▇█"
+
+    def _update_ml_contrib(self, contrib16, is_anomaly):
+        """ERR 행 셀 색상·문자를 채널 기여도에 맞게 갱신."""
+        max_e = contrib16.max() if is_anomaly and contrib16.max() > 0 else 1.0
+        for i, lbl in enumerate(self._ml_contrib_labels):
+            if i in self._DEAD_SET:
+                lbl.config(text="─", bg=T_BORD, fg=T_DIM)
+            elif not is_anomaly:
+                lbl.config(text="·", bg=T_CARD, fg=T_DIM)
+            else:
+                ratio = float(contrib16[i]) / max_e
+                bg    = self._lerp_color(T_CARD, T_RED, ratio)
+                bar   = self._BAR_CHARS[int(ratio * (len(self._BAR_CHARS) - 1))]
+                fg    = T_TEXT if ratio > 0.5 else T_DIM
+                lbl.config(text=bar, bg=bg, fg=fg)
 
     def _log_ml_anomaly(self, event, score, last_frame_raw):
         """ML 이상 감지/복구 이벤트를 ml_anomaly_log.csv 에 기록."""
