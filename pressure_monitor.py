@@ -342,73 +342,55 @@ class App:
         )
         self.cal_loaded_label.pack(anchor="w", padx=20, pady=(0, 6))
 
-        self.cal_apply_btn = tk.Button(
-            left, text="보정 적용: OFF", font=("맑은 고딕", 10, "bold"),
-            bg="#4a4a4a", fg="#888888", activebackground="#5a5a5a",
-            relief=tk.FLAT, height=2, state=tk.DISABLED,
-            command=self._toggle_cal_apply
-        )
-        self.cal_apply_btn.pack(padx=20, pady=(0, 10), fill=tk.X)
+        tk.Label(
+            left, text="우측 컨투어에 자동 반영됩니다",
+            bg="#252526", fg="#555555", font=("맑은 고딕", 8)
+        ).pack(anchor="w", padx=20, pady=(0, 10))
 
-    # ---------------- 오른쪽: 컨투어(jet) 시각화 ----------------
+    # ---------------- 오른쪽: 원본 | 보정 적용 2분할 컨투어 ----------------
     def _build_right_panel(self, parent):
         right = tk.Frame(parent, bg="#1e1e1e")
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        tk.Label(right, text="1 x 16 센서 압력 컨투어 (jet)", bg="#1e1e1e", fg="white",
-                 font=("맑은 고딕", 13, "bold")).pack(pady=(20, 10))
+        hdr = tk.Frame(right, bg="#1e1e1e")
+        hdr.pack(fill=tk.X, pady=(14, 2))
+        tk.Label(hdr, text="원본", bg="#1e1e1e", fg="#aaaaaa",
+                 font=("맑은 고딕", 11, "bold")).pack(side=tk.LEFT, padx=(60, 0))
+        tk.Label(hdr, text="보정 적용", bg="#1e1e1e", fg="#4da3ff",
+                 font=("맑은 고딕", 11, "bold")).pack(side=tk.RIGHT, padx=(0, 60))
 
-        self.fig = Figure(figsize=(6.6, 4.3), dpi=100, facecolor="#1e1e1e")
-        # 컨투어 축과 컬러바 축을 각각 고정된 위치로 미리 확보해둔다.
-        # (매 프레임 colorbar.remove() 후 재생성하는 방식은 반복 호출 시
-        #  레이아웃이 틀어지거나, matplotlib 버전에 따라 내부적으로
-        #  AttributeError를 일으킬 수 있는 취약점이 있어 피한다.)
-        self.ax = self.fig.add_axes([0.08, 0.13, 0.80, 0.78])
-        self.cax = self.fig.add_axes([0.90, 0.13, 0.03, 0.78])
+        self.fig = Figure(figsize=(7.2, 4.2), dpi=100, facecolor="#1e1e1e")
 
-        # 채널 사이를 정수 배(SEGMENTS_PER_CHANNEL)로 나눠서, 격자점이 채널의
-        # 정수 위치(0,1,2...15)에 항상 정확히 맞도록 한다. 이렇게 안 하면
-        # 부드러움 슬라이더를 바꿀 때 실제 눌린 채널 값(피크)이 격자 반올림
-        # 오차로 미세하게 흔들려 보이는 문제가 생긴다.
+        # 좌: 원본 / 우: 보정 적용 — 컬러바 포함 4축 고정 배치
+        self.ax_raw = self.fig.add_axes([0.05, 0.14, 0.36, 0.76])
+        self.cax_raw = self.fig.add_axes([0.42, 0.14, 0.025, 0.76])
+        self.ax_cal = self.fig.add_axes([0.52, 0.14, 0.36, 0.76])
+        self.cax_cal = self.fig.add_axes([0.89, 0.14, 0.025, 0.76])
+
+        # 격자/보간 사전 계산 (변경 없음)
         SEGMENTS_PER_CHANNEL = 20
         self.x_fine = np.linspace(0, NUM_CHANNELS - 1,
                                   (NUM_CHANNELS - 1) * SEGMENTS_PER_CHANNEL + 1)
-        # 각 격자점이 몇 번째 채널 구간에 속하는지(i)와, 그 구간 안에서의
-        # 위치(0~1, t)를 미리 계산해둔다. 채널 정수 위치에서는 항상 t=0 또는 1이
-        # 되도록 격자를 맞췄으므로, 그 지점의 값은 보간 방식과 무관하게 항상
-        # 원본 채널값 그대로 나온다 (피크가 슬라이더에 따라 흔들리지 않음).
-        # 계단식(부드러움=0) 렌더링용: x_fine의 각 점이 어느 채널에 가장 가까운지
         self.nearest_idx = np.clip(np.round(self.x_fine).astype(int), 0, NUM_CHANNELS - 1)
-        # 셀 기반(칸 중심 오프셋) 계산용
-        self.cell_offset = self.x_fine - self.nearest_idx  # 칸 중심 기준 -0.5~0.5
+        self.cell_offset = self.x_fine - self.nearest_idx
         self.y_axis = np.linspace(0, 1, self.STRIP_ROWS)
-        # levels를 정수로 넘기면 matplotlib이 vmin/vmax 대신 매 프레임의 Z 자체
-        # min~max로 등고선 간격을 재계산해버린다 (특히 Z가 상수일 때 1e-15 같은
-        # 부동소수점 노이즈 레벨이 생성됨). 그래서 0~4095 고정 레벨을 직접 만든다.
         self.contour_levels = np.linspace(SCALE_MIN, SCALE_MAX, 26)
 
-        self.colorbar = None  # 아래에서 최초 1회만 채움
-
         self.canvas_widget = FigureCanvasTkAgg(self.fig, master=right)
-        self.canvas_widget.get_tk_widget().pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+        self.canvas_widget.get_tk_widget().pack(pady=6, padx=6, fill=tk.BOTH, expand=True)
 
-        self._style_axes()
-
-        # 컬러바는 여기서 딱 한 번만 생성한다. 색상 범위(0~4095)가 고정이므로
-        # 매 프레임 다시 그릴 이유가 없다. 반복적으로 remove() 후 재생성하면
-        # matplotlib 버전에 따라 AttributeError나, cax를 재사용해도 반복 호출
-        # 자체로 내부 상태가 누적되어 결국 RecursionError가 나는 것까지
-        # 실제로 재현되어 확인했다. 그래서 아예 한 번만 만들고 다시는 안 건드린다.
+        # 컬러바는 각 축에 한 번만 생성 (매 프레임 재생성 금지)
         from matplotlib.cm import ScalarMappable
         from matplotlib.colors import Normalize
         sm = ScalarMappable(norm=Normalize(vmin=SCALE_MIN, vmax=SCALE_MAX), cmap="jet")
         sm.set_array([])
-        self.colorbar = self.fig.colorbar(sm, cax=self.cax)
-        self.colorbar.ax.yaxis.set_tick_params(color="white")
-        for label in self.colorbar.ax.get_yticklabels():
-            label.set_color("white")
+        for cax in (self.cax_raw, self.cax_cal):
+            cb = self.fig.colorbar(sm, cax=cax)
+            cb.ax.yaxis.set_tick_params(color="white")
+            for lbl in cb.ax.get_yticklabels():
+                lbl.set_color("white")
 
-        self._draw_contour([0] * NUM_CHANNELS, force=True)  # 초기 빈 화면
+        self._draw_contour([0] * NUM_CHANNELS, force=True)
 
     # ---------------- 관리자 탭 ----------------
     def _build_admin_tab(self, parent):
@@ -658,13 +640,13 @@ class App:
         self.new_pw_confirm_entry.delete(0, tk.END)
         messagebox.showinfo("비밀번호 변경", "비밀번호가 변경되었습니다.")
 
-    def _style_axes(self):
-        self.ax.set_facecolor("#1e1e1e")
-        self.ax.set_xticks(range(NUM_CHANNELS))
-        self.ax.set_xlabel("Channel", color="white")
-        self.ax.set_yticks([])
-        self.ax.tick_params(colors="white")
-        for spine in self.ax.spines.values():
+    def _style_axes(self, ax):
+        ax.set_facecolor("#1e1e1e")
+        ax.set_xticks(range(NUM_CHANNELS))
+        ax.set_xlabel("Channel", color="white")
+        ax.set_yticks([])
+        ax.tick_params(colors="white")
+        for spine in ax.spines.values():
             spine.set_color("#555555")
 
     # ---------------- 동작 로직 ----------------
@@ -859,36 +841,39 @@ class App:
     def _draw_contour(self, values, force=False):
         now = time.time()
         if not force and (now - self._last_contour_draw) < self.CONTOUR_REDRAW_INTERVAL:
-            return  # 너무 자주 다시 그리지 않도록 제한 (렌더링 부하 방지)
+            return
         self._last_contour_draw = now
 
-        # 보정 적용 시: display = offset - raw  (영점 기준으로 정규화)
-        # 미적용 시   : display = 4095 - raw   (단순 반전)
         arr = np.asarray(values, dtype=float)
-        if self.cal_apply and self.cal_offsets:
+
+        # ── 좌측: 원본 (4095 - raw) ──────────────────────────────────
+        raw_display = np.clip(SCALE_MAX - arr, SCALE_MIN, SCALE_MAX)
+        Z_raw = np.tile(self._compute_display_row(raw_display), (self.STRIP_ROWS, 1))
+
+        self.ax_raw.clear()
+        self._style_axes(self.ax_raw)
+        self.ax_raw.contourf(self.x_fine, self.y_axis, Z_raw,
+                             levels=self.contour_levels, cmap="jet")
+
+        # ── 우측: 보정 적용 (offset - raw) 또는 안내 텍스트 ────────────
+        self.ax_cal.clear()
+        self._style_axes(self.ax_cal)
+        if self.cal_offsets:
             offsets = np.array([self.cal_offsets.get(i, float(SCALE_MAX))
                                 for i in range(NUM_CHANNELS)])
-            clipped = np.clip(offsets - arr, SCALE_MIN, SCALE_MAX)
+            cal_display = np.clip(offsets - arr, SCALE_MIN, SCALE_MAX)
+            Z_cal = np.tile(self._compute_display_row(cal_display), (self.STRIP_ROWS, 1))
+            self.ax_cal.contourf(self.x_fine, self.y_axis, Z_cal,
+                                 levels=self.contour_levels, cmap="jet")
         else:
-            clipped = np.clip(SCALE_MAX - arr, SCALE_MIN, SCALE_MAX)
-
-        # 16개 값을 부드러움 슬라이더 값에 따라 계단식~부드럽게 변환한다.
-        # (참고: contourf는 격자 사이를 자체적으로 선형 보간하므로, 단순히
-        #  np.interp의 표본 개수만 늘려서는 육안상 차이가 거의 없다.
-        #  그래서 여기서는 "보간 방식 자체"를 바꾼다.)
-        y_interp = self._compute_display_row(clipped)
-        # 세로로 복제해서 2D 격자를 만든다 (컨투어는 2D 데이터가 필요)
-        Z = np.tile(y_interp, (self.STRIP_ROWS, 1))
-
-        self.ax.clear()
-        self._style_axes()
-
-        contour = self.ax.contourf(
-            self.x_fine, self.y_axis, Z,
-            levels=self.contour_levels, cmap="jet"
-        )
-        # 컬러바는 _build_right_panel에서 이미 고정으로 만들어뒀으므로
-        # 여기서는 절대 건드리지 않는다 (건드릴수록 오히려 문제가 생긴다).
+            self.ax_cal.set_facecolor("#1a1a1a")
+            self.ax_cal.text(
+                0.5, 0.5,
+                "보정값 없음\n보정 탭에서 계산하거나\nJSON 파일을 불러오세요",
+                transform=self.ax_cal.transAxes,
+                ha="center", va="center", color="#555555",
+                fontsize=9
+            )
 
         self.canvas_widget.draw_idle()
 
@@ -911,10 +896,10 @@ class App:
             text=f"{os.path.basename(filepath)}\n({len(self.cal_offsets)}채널)",
             fg="#4da3ff"
         )
-        self.cal_apply_btn.config(state=tk.NORMAL)
-        # 불러오면 자동으로 ON
-        self.cal_apply = True
-        self.cal_apply_btn.config(text="보정 적용: ON", bg="#c67a00", fg="white")
+        try:
+            self._draw_contour(self.current_values, force=True)
+        except Exception:
+            pass
 
     def _toggle_cal_apply(self):
         if not self.cal_offsets:
@@ -931,14 +916,16 @@ class App:
             pass
 
     def _sync_cal_offsets_from_tab(self):
-        """보정 탭에서 계산한 오프셋을 측정 탭에 즉시 반영한다."""
         if not self.cal_offsets:
             return
         self.cal_loaded_label.config(
             text=f"보정 탭에서 계산됨\n({len(self.cal_offsets)}채널)",
             fg="#4da3ff"
         )
-        self.cal_apply_btn.config(state=tk.NORMAL)
+        try:
+            self._draw_contour(self.current_values, force=True)
+        except Exception:
+            pass
 
     # ---------------- 보정 탭 ----------------
     def _build_calibration_tab(self, parent):
