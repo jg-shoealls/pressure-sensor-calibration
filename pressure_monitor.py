@@ -37,12 +37,39 @@ import json
 import hashlib
 import subprocess
 import sys
+from collections import deque
 
 import numpy as np
 import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+try:
+    import torch
+    import torch.nn as nn
+    _TORCH_OK = True
+except ImportError:
+    _TORCH_OK = False
+
+ML_ACTIVE_CH  = [0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13]
+ML_SEQ_LEN    = 30
+ML_HIDDEN     = 32
+ML_MODEL_PATH = 'anomaly_model.pt'
+ML_STATS_PATH = 'anomaly_stats.npz'
+
+if _TORCH_OK:
+    class LSTMAutoencoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            n = len(ML_ACTIVE_CH)
+            self.encoder = nn.LSTM(n, ML_HIDDEN, batch_first=True)
+            self.decoder = nn.LSTM(ML_HIDDEN, n, batch_first=True)
+        def forward(self, x):
+            _, (h, _) = self.encoder(x)
+            rep = h[-1].unsqueeze(1).expand(-1, x.size(1), -1)
+            out, _ = self.decoder(rep)
+            return out
 
 NUM_CHANNELS = 16
 DEFAULT_PORT = 'COM3'
@@ -215,6 +242,12 @@ class App:
         self._cal_fg_press = DARK["CAL_FG_PRESS"]
         self.cmap_name = "jet"
 
+        # ── ML 이상 감지 상태 ────────────────────────────────────────────
+        self._ml_model     = None
+        self._ml_threshold = None
+        self._ml_score     = 0.0
+        self._ml_buffer    = deque(maxlen=ML_SEQ_LEN)
+
         # ── 재생(Playback) 상태 ─────────────────────────────────────────
         self._pb_frames = []      # list of [ch0..ch15]
         self._pb_idx = 0
@@ -256,6 +289,7 @@ class App:
         self._build_admin_tab(admin_tab)
         self._build_calibration_tab(calibration_tab)
 
+        self._load_ml_model()
         self.root.after(10, self.poll_queue)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -407,6 +441,22 @@ class App:
             bg=T_PANEL, fg=T_DIM, activebackground=T_CARD,
             relief=tk.FLAT, pady=2, command=self._open_anomaly_log
         ).pack(anchor="w", padx=14, pady=(5, 0))
+
+        # ML 이상 점수 바
+        self._ml_label = tk.Label(
+            left, text="ML: 모델 없음  (훈련 필요)",
+            bg=T_PANEL, fg=T_DIM, font=("Consolas", 6))
+        self._ml_label.pack(anchor="w", padx=14, pady=(6, 0))
+        self._ml_canvas = tk.Canvas(
+            left, bg=T_BORD, height=7, highlightthickness=0)
+        self._ml_canvas.pack(fill=tk.X, padx=14, pady=(2, 0))
+        self._ml_bar = self._ml_canvas.create_rectangle(
+            0, 0, 0, 7, fill=T_GREEN, outline="")
+        tk.Button(
+            left, text="ML 모델 훈련", font=("Consolas", 6),
+            bg=T_PANEL, fg=T_DIM, activebackground=T_CARD,
+            relief=tk.FLAT, pady=1, command=self._train_ml_model
+        ).pack(anchor="w", padx=14, pady=(3, 0))
 
         # ── CALIBRATION ──────────────────────────────────────────────
         _sec("CALIBRATION")
@@ -888,6 +938,79 @@ class App:
         self.theme_btn.config(text="🌙" if self._is_dark else "☀",
                               fg=T_DIM, bg=T_HDR, activebackground=T_HDR)
 
+    # ---------------- ML 이상 감지 ----------------
+    def _load_ml_model(self):
+        if not _TORCH_OK:
+            self._ml_label.config(text="ML: PyTorch 없음", fg=T_DIM)
+            return
+        mp, sp = ML_MODEL_PATH, ML_STATS_PATH
+        if not (os.path.exists(mp) and os.path.exists(sp)):
+            return
+        try:
+            model = LSTMAutoencoder()
+            model.load_state_dict(
+                torch.load(mp, map_location='cpu', weights_only=True))
+            model.eval()
+            stats = np.load(sp)
+            self._ml_model     = model
+            self._ml_threshold = float(stats['threshold'])
+            self._ml_label.config(
+                text=f"ML: 로드됨  임계={self._ml_threshold:.4f}", fg=T_BLUE)
+        except Exception as e:
+            self._ml_label.config(text="ML: 로드 실패", fg=T_RED)
+
+    def _run_ml_inference(self):
+        raw    = np.array(self._ml_buffer, dtype=np.float32)
+        active = raw[:, ML_ACTIVE_CH]
+        pressure = (4095 - active) / 4095.0
+        t = torch.from_numpy(pressure).unsqueeze(0)  # (1, 30, 12)
+        with torch.no_grad():
+            pred  = self._ml_model(t)
+            score = float(((pred - t) ** 2).mean())
+        self._ml_score = score
+        thresh = self._ml_threshold
+        ratio  = min(1.0, score / thresh)
+        color  = T_RED if score > thresh else (T_ORNG if ratio > 0.7 else T_GREEN)
+        w = max(1, self._ml_canvas.winfo_width())
+        self._ml_canvas.coords(self._ml_bar, 0, 0, int(w * ratio), 7)
+        self._ml_canvas.itemconfig(self._ml_bar, fill=color)
+        tag = "⚠ 이상" if score > thresh else "정상"
+        self._ml_label.config(
+            text=f"ML: {score:.4f} / {thresh:.4f}  {tag}",
+            fg=T_RED if score > thresh else T_DIM)
+
+    def _train_ml_model(self):
+        if not _TORCH_OK:
+            messagebox.showwarning("PyTorch 없음", "pip install torch 로 설치하세요.")
+            return
+        filepath = filedialog.askopenfilename(
+            title="훈련용 CSV 선택",
+            filetypes=[("CSV 파일", "*.csv"), ("모든 파일", "*.*")])
+        if not filepath:
+            return
+        self._ml_label.config(text="ML: 훈련 중...", fg=T_ORNG)
+        self.root.update()
+
+        def run():
+            try:
+                from ml_anomaly import train as ml_train
+                ml_train(filepath, save_dir=os.path.dirname(os.path.abspath(__file__)))
+                self.root.after(0, self._on_ml_train_done)
+            except Exception as e:
+                self.root.after(0, lambda: self._ml_label.config(
+                    text=f"ML: 훈련 실패 — {e}", fg=T_RED))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_ml_train_done(self):
+        self._ml_model = None
+        self._ml_buffer.clear()
+        self._load_ml_model()
+        messagebox.showinfo("훈련 완료",
+            "ML 모델 훈련 완료.\n\n"
+            "이제 실시간 수신 중 STATUS 섹션의\n"
+            "ML 점수 바로 이상 수준을 확인할 수 있습니다.")
+
     # ---------------- 재생(Playback) 로직 ----------------
     def _pb_load(self):
         filepath = filedialog.askopenfilename(
@@ -1295,6 +1418,11 @@ class App:
         self._last_contour_draw = now
 
         arr = np.asarray(values, dtype=float)
+
+        # ML 버퍼 갱신 및 추론
+        self._ml_buffer.append(arr.tolist())
+        if self._ml_model and len(self._ml_buffer) == ML_SEQ_LEN:
+            self._run_ml_inference()
 
         # ── 좌측: 원본 (4095 - raw) ──────────────────────────────────
         raw_display = np.clip(SCALE_MAX - arr, SCALE_MIN, SCALE_MAX)
