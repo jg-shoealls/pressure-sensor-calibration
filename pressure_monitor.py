@@ -55,8 +55,9 @@ except ImportError:
 ML_ACTIVE_CH  = [0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13]
 ML_SEQ_LEN    = 30
 ML_HIDDEN     = 32
-ML_MODEL_PATH = 'anomaly_model.pt'
-ML_STATS_PATH = 'anomaly_stats.npz'
+ML_MODEL_PATH   = 'anomaly_model.pt'
+ML_STATS_PATH   = 'anomaly_stats.npz'
+ML_LOG_PATH     = 'ml_anomaly_log.csv'
 
 if _TORCH_OK:
     class LSTMAutoencoder(nn.Module):
@@ -243,10 +244,11 @@ class App:
         self.cmap_name = "jet"
 
         # ── ML 이상 감지 상태 ────────────────────────────────────────────
-        self._ml_model     = None
-        self._ml_threshold = None
-        self._ml_score     = 0.0
-        self._ml_buffer    = deque(maxlen=ML_SEQ_LEN)
+        self._ml_model       = None
+        self._ml_threshold   = None
+        self._ml_score       = 0.0
+        self._ml_buffer      = deque(maxlen=ML_SEQ_LEN)
+        self._ml_was_anomaly = False   # 이전 프레임 이상 여부 (상태 변화 시에만 로그)
 
         # ── 재생(Playback) 상태 ─────────────────────────────────────────
         self._pb_frames = []      # list of [ch0..ch15]
@@ -452,11 +454,18 @@ class App:
         self._ml_canvas.pack(fill=tk.X, padx=14, pady=(2, 0))
         self._ml_bar = self._ml_canvas.create_rectangle(
             0, 0, 0, 7, fill=T_GREEN, outline="")
+        ml_btn_row = tk.Frame(left, bg=T_PANEL)
+        ml_btn_row.pack(fill=tk.X, padx=14, pady=(3, 0))
         tk.Button(
-            left, text="ML 모델 훈련", font=("Consolas", 6),
+            ml_btn_row, text="ML 모델 훈련", font=("Consolas", 6),
             bg=T_PANEL, fg=T_DIM, activebackground=T_CARD,
             relief=tk.FLAT, pady=1, command=self._train_ml_model
-        ).pack(anchor="w", padx=14, pady=(3, 0))
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            ml_btn_row, text="ML 로그 열기", font=("Consolas", 6),
+            bg=T_PANEL, fg=T_DIM, activebackground=T_CARD,
+            relief=tk.FLAT, pady=1, command=self._open_ml_log
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # ── CALIBRATION ──────────────────────────────────────────────
         _sec("CALIBRATION")
@@ -960,24 +969,62 @@ class App:
             self._ml_label.config(text="ML: 로드 실패", fg=T_RED)
 
     def _run_ml_inference(self):
-        raw    = np.array(self._ml_buffer, dtype=np.float32)
-        active = raw[:, ML_ACTIVE_CH]
+        raw      = np.array(self._ml_buffer, dtype=np.float32)
+        active   = raw[:, ML_ACTIVE_CH]
         pressure = (4095 - active) / 4095.0
         t = torch.from_numpy(pressure).unsqueeze(0)  # (1, 30, 12)
         with torch.no_grad():
             pred  = self._ml_model(t)
             score = float(((pred - t) ** 2).mean())
         self._ml_score = score
-        thresh = self._ml_threshold
-        ratio  = min(1.0, score / thresh)
-        color  = T_RED if score > thresh else (T_ORNG if ratio > 0.7 else T_GREEN)
+        thresh     = self._ml_threshold
+        is_anomaly = score > thresh
+        ratio      = min(1.0, score / thresh)
+        color      = T_RED if is_anomaly else (T_ORNG if ratio > 0.7 else T_GREEN)
         w = max(1, self._ml_canvas.winfo_width())
         self._ml_canvas.coords(self._ml_bar, 0, 0, int(w * ratio), 7)
         self._ml_canvas.itemconfig(self._ml_bar, fill=color)
-        tag = "⚠ 이상" if score > thresh else "정상"
+        tag = "⚠ 이상" if is_anomaly else "정상"
         self._ml_label.config(
             text=f"ML: {score:.4f} / {thresh:.4f}  {tag}",
-            fg=T_RED if score > thresh else T_DIM)
+            fg=T_RED if is_anomaly else T_DIM)
+
+        # 상태 변화 시에만 로그 기록 (매 프레임 기록 방지)
+        if is_anomaly != self._ml_was_anomaly:
+            event = "감지" if is_anomaly else "복구"
+            self._log_ml_anomaly(event, score, raw[-1])
+            self._ml_was_anomaly = is_anomaly
+
+    def _log_ml_anomaly(self, event, score, last_frame_raw):
+        """ML 이상 감지/복구 이벤트를 ml_anomaly_log.csv 에 기록."""
+        is_new = (not os.path.exists(ML_LOG_PATH)
+                  or os.path.getsize(ML_LOG_PATH) == 0)
+        # 마지막 프레임에서 가장 압력이 높은(= raw가 낮은) 활성 채널 찾기
+        active_raw = last_frame_raw[ML_ACTIVE_CH]
+        peak_idx   = int(np.argmin(active_raw))
+        peak_ch    = ML_ACTIVE_CH[peak_idx]
+        peak_press = int(4095 - active_raw[peak_idx])
+        ratio      = score / self._ml_threshold if self._ml_threshold else 0.0
+        try:
+            with open(ML_LOG_PATH, 'a', newline='', encoding='utf-8-sig') as f:
+                w = csv.writer(f)
+                if is_new:
+                    w.writerow(['datetime', 'event', 'ml_score', 'threshold',
+                                'ratio', 'peak_channel', 'peak_pressure'])
+                ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                w.writerow([ts, event,
+                            f'{score:.6f}', f'{self._ml_threshold:.6f}',
+                            f'{ratio:.3f}', f'ch{peak_ch:02d}', peak_press])
+        except OSError:
+            pass
+
+    def _open_ml_log(self):
+        path = os.path.abspath(ML_LOG_PATH)
+        if not os.path.exists(path):
+            messagebox.showinfo("ML 이상 로그", "아직 기록된 ML 이상 이력이 없습니다.\n\n"
+                                "모델 로드 후 실시간 수신 시 이상이 감지되면 자동 기록됩니다.")
+            return
+        self._open_path(path)
 
     def _train_ml_model(self):
         if not _TORCH_OK:
