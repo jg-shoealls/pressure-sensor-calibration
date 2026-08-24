@@ -145,12 +145,15 @@ class SerialReader(threading.Thread):
 
 
 class App:
-    STRIP_ROWS = 40        # 세로 방향 두께 (시각적 표현용, 실제 데이터 아님)
-    # 화면 갱신 최소 간격(초). 컨투어 1프레임 렌더링에 수십 ms가 걸리므로
-    # 10ms로 두면 제한 역할을 못 하고 UI가 버튼 입력에 반응할 여유까지 없어진다.
-    # 약 30fps로 제한하면 눈으로는 충분히 부드럽고 조작감도 유지된다.
-    # (데이터 수신과 CSV 기록은 여전히 10ms 전부 누락 없이 처리됨)
+    STRIP_ROWS = 40
     CONTOUR_REDRAW_INTERVAL = 0.033
+
+    # ── 채널 이상 감지 기준 ─────────────────────────────────────────────
+    _FROZEN_SAMPLES = 30   # 무변화 판정에 쓸 최근 샘플 수
+    _FROZEN_STD    = 3.0   # 표준편차 이하 → 무변화(frozen) 판정
+    _SAT_LOW       = 50    # ADC 이하 → 단선 의심
+    _SAT_HIGH      = 4090  # ADC 이상 → 포화/단선 의심
+    _CAL_UNDERFLOW = -500  # 보정Δ 이 이하 → 보정 이탈 의심
 
     def __init__(self, root):
         self.root = root
@@ -173,8 +176,9 @@ class App:
         self._last_contour_draw = 0.0
         self.smoothness = 50  # 0=계단식, 100=경계 넓게 부드러움 (칸 중심은 항상 원본값)
 
-        self.cal_offsets = {}   # 채널별 보정 오프셋 {0: float, 1: float, ...}
-        self.cal_apply = False  # 보정 적용 ON/OFF
+        self.cal_offsets = {}
+        self.cal_apply = False
+        self._ch_history = [[] for _ in range(NUM_CHANNELS)]  # 채널별 최근 raw 값 버퍼
 
         # --- 관리자 계정 / 기록 보관 폴더 준비 ---
         self.admin_config, is_new_config = load_or_create_admin_config()
@@ -423,6 +427,14 @@ class App:
                            font=FONT, width=COL_W)
             lbl.grid(row=2, column=i + 1, padx=1, pady=1)
             self.cal_val_labels.append(lbl)
+
+        # ── 채널 상태 바 ──────────────────────────────────────────────
+        self.ch_status_label = tk.Label(
+            right, text="● 전 채널 정상",
+            bg="#1e1e1e", fg="#3fb950",
+            font=("맑은 고딕", 8), anchor="w"
+        )
+        self.ch_status_label.pack(fill=tk.X, padx=10, pady=(0, 4))
 
         self._draw_contour([0] * NUM_CHANNELS, force=True)
 
@@ -909,19 +921,67 @@ class App:
                 fontsize=9
             )
 
-        # ── 수치 테이블 갱신 ───────────────────────────────────────────
-        for i in range(NUM_CHANNELS):
-            raw_v = int(arr[i])                         # 원본 ADC 값
-            self.raw_val_labels[i].config(text=str(raw_v))
+        # ── 수치 테이블 갱신 + 채널 이상 감지 ────────────────────────────
+        warn_channels = []
 
+        for i in range(NUM_CHANNELS):
+            raw_v = int(arr[i])
+
+            # 히스토리 갱신 (최근 _FROZEN_SAMPLES 개만 유지)
+            hist = self._ch_history[i]
+            hist.append(raw_v)
+            if len(hist) > self._FROZEN_SAMPLES:
+                hist.pop(0)
+
+            # 이상 여부 판정
+            reason = None
+            if raw_v <= self._SAT_LOW or raw_v >= self._SAT_HIGH:
+                reason = "단선"
+            elif (len(hist) >= self._FROZEN_SAMPLES
+                  and float(np.std(hist)) < self._FROZEN_STD):
+                reason = "무변화"
+
+            # 보정Δ 계산 및 이상 추가 판정
+            delta = None
             if self.cal_offsets:
                 delta = int(self.cal_offsets.get(i, SCALE_MAX) - arr[i])
-                delta = max(SCALE_MIN, min(SCALE_MAX, delta))
-                # 압력이 클수록 밝은 색으로 강조
-                color = "#ff6b6b" if delta > 300 else "#4da3ff"
-                self.cal_val_labels[i].config(text=str(delta), fg=color)
+                delta_clamped = max(SCALE_MIN, min(SCALE_MAX, delta))
+                if reason is None and delta < self._CAL_UNDERFLOW:
+                    reason = "보정이탈"
+
+            # 셀 색상 결정
+            if reason:
+                warn_channels.append((i, reason))
+                raw_bg, raw_fg = "#332200", "#ffcc00"
+                cal_bg, cal_fg = "#332200", "#ffcc00"
             else:
-                self.cal_val_labels[i].config(text="-", fg="#4da3ff")
+                raw_bg, raw_fg = "#252526", "#cccccc"
+                if delta is not None:
+                    cal_bg = "#252526"
+                    cal_fg = "#ff6b6b" if delta > 300 else "#4da3ff"
+                else:
+                    cal_bg, cal_fg = "#252526", "#4da3ff"
+
+            # 원본 셀 갱신
+            self.raw_val_labels[i].config(text=str(raw_v), bg=raw_bg, fg=raw_fg)
+
+            # 보정Δ 셀 갱신
+            if delta is not None:
+                self.cal_val_labels[i].config(
+                    text=str(delta_clamped), bg=cal_bg, fg=cal_fg
+                )
+            else:
+                self.cal_val_labels[i].config(text="-", bg=cal_bg, fg=cal_fg)
+
+        # 상태 바 갱신
+        if warn_channels:
+            parts = [f"ch{i}({r})" for i, r in warn_channels]
+            self.ch_status_label.config(
+                text="⚠ 이상 감지: " + "  ".join(parts),
+                fg="#ffcc00"
+            )
+        else:
+            self.ch_status_label.config(text="● 전 채널 정상", fg="#3fb950")
 
         self.canvas_widget.draw_idle()
 
