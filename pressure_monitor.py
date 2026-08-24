@@ -390,6 +390,40 @@ class App:
             for lbl in cb.ax.get_yticklabels():
                 lbl.set_color("white")
 
+        # ── 채널별 실시간 수치 테이블 ──────────────────────────────────
+        tbl = tk.Frame(right, bg="#1a1a1a")
+        tbl.pack(fill=tk.X, padx=6, pady=(0, 6))
+
+        FONT = ("Consolas", 7)
+        COL_W = 5
+
+        # 헤더 행 (ch0 ~ ch15)
+        tk.Label(tbl, text="", bg="#1a1a1a", width=4, font=FONT).grid(
+            row=0, column=0, padx=1, pady=1)
+        for i in range(NUM_CHANNELS):
+            tk.Label(tbl, text=f"ch{i}", bg="#1a1a1a", fg="#666666",
+                     font=FONT, width=COL_W).grid(row=0, column=i + 1, padx=1)
+
+        # 원본 행 (raw ADC)
+        tk.Label(tbl, text="원본", bg="#1a1a1a", fg="#aaaaaa",
+                 font=FONT, width=4).grid(row=1, column=0, padx=1, pady=1)
+        self.raw_val_labels = []
+        for i in range(NUM_CHANNELS):
+            lbl = tk.Label(tbl, text="-", bg="#252526", fg="#cccccc",
+                           font=FONT, width=COL_W)
+            lbl.grid(row=1, column=i + 1, padx=1, pady=1)
+            self.raw_val_labels.append(lbl)
+
+        # 보정 행 (offset - raw, 0 = 무압력 기준)
+        tk.Label(tbl, text="보정Δ", bg="#1a1a1a", fg="#4da3ff",
+                 font=FONT, width=4).grid(row=2, column=0, padx=1, pady=1)
+        self.cal_val_labels = []
+        for i in range(NUM_CHANNELS):
+            lbl = tk.Label(tbl, text="-", bg="#252526", fg="#4da3ff",
+                           font=FONT, width=COL_W)
+            lbl.grid(row=2, column=i + 1, padx=1, pady=1)
+            self.cal_val_labels.append(lbl)
+
         self._draw_contour([0] * NUM_CHANNELS, force=True)
 
     # ---------------- 관리자 탭 ----------------
@@ -874,6 +908,20 @@ class App:
                 ha="center", va="center", color="#555555",
                 fontsize=9
             )
+
+        # ── 수치 테이블 갱신 ───────────────────────────────────────────
+        for i in range(NUM_CHANNELS):
+            raw_v = int(arr[i])                         # 원본 ADC 값
+            self.raw_val_labels[i].config(text=str(raw_v))
+
+            if self.cal_offsets:
+                delta = int(self.cal_offsets.get(i, SCALE_MAX) - arr[i])
+                delta = max(SCALE_MIN, min(SCALE_MAX, delta))
+                # 압력이 클수록 밝은 색으로 강조
+                color = "#ff6b6b" if delta > 300 else "#4da3ff"
+                self.cal_val_labels[i].config(text=str(delta), fg=color)
+            else:
+                self.cal_val_labels[i].config(text="-", fg="#4da3ff")
 
         self.canvas_widget.draw_idle()
 
