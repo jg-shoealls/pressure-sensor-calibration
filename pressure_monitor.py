@@ -173,6 +173,9 @@ class App:
         self._last_contour_draw = 0.0
         self.smoothness = 50  # 0=계단식, 100=경계 넓게 부드러움 (칸 중심은 항상 원본값)
 
+        self.cal_offsets = {}   # 채널별 보정 오프셋 {0: float, 1: float, ...}
+        self.cal_apply = False  # 보정 적용 ON/OFF
+
         # --- 관리자 계정 / 기록 보관 폴더 준비 ---
         self.admin_config, is_new_config = load_or_create_admin_config()
         self.admin_authenticated = False
@@ -320,6 +323,32 @@ class App:
             font=("Consolas", 9), justify="left"
         )
         self.range_label.pack(anchor="w", padx=20, pady=(2, 0))
+
+        # --- 보정 적용 섹션 ---
+        tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(12, 8))
+
+        tk.Label(left, text="보정 적용", bg="#252526", fg="#aaaaaa",
+                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=20)
+
+        tk.Button(
+            left, text="보정 파일 불러오기", font=("맑은 고딕", 9),
+            bg="#3a3a3a", fg="white", relief=tk.FLAT,
+            command=self._load_calibration_file
+        ).pack(padx=20, pady=(4, 4), fill=tk.X)
+
+        self.cal_loaded_label = tk.Label(
+            left, text="파일 없음", bg="#252526", fg="#666666",
+            font=("Consolas", 8), wraplength=178, justify="left"
+        )
+        self.cal_loaded_label.pack(anchor="w", padx=20, pady=(0, 6))
+
+        self.cal_apply_btn = tk.Button(
+            left, text="보정 적용: OFF", font=("맑은 고딕", 10, "bold"),
+            bg="#4a4a4a", fg="#888888", activebackground="#5a5a5a",
+            relief=tk.FLAT, height=2, state=tk.DISABLED,
+            command=self._toggle_cal_apply
+        )
+        self.cal_apply_btn.pack(padx=20, pady=(0, 10), fill=tk.X)
 
     # ---------------- 오른쪽: 컨투어(jet) 시각화 ----------------
     def _build_right_panel(self, parent):
@@ -833,9 +862,15 @@ class App:
             return  # 너무 자주 다시 그리지 않도록 제한 (렌더링 부하 방지)
         self._last_contour_draw = now
 
-        # 안 눌린 상태가 raw=4095(최댓값)로 관측되므로, "4095 - raw"로 뒤집으면
-        # 안눌림=0(파랑), 눌림=값이 커짐(빨강)이 된다. 클리핑은 안전장치.
-        clipped = np.clip(SCALE_MAX - np.asarray(values), SCALE_MIN, SCALE_MAX)
+        # 보정 적용 시: display = offset - raw  (영점 기준으로 정규화)
+        # 미적용 시   : display = 4095 - raw   (단순 반전)
+        arr = np.asarray(values, dtype=float)
+        if self.cal_apply and self.cal_offsets:
+            offsets = np.array([self.cal_offsets.get(i, float(SCALE_MAX))
+                                for i in range(NUM_CHANNELS)])
+            clipped = np.clip(offsets - arr, SCALE_MIN, SCALE_MAX)
+        else:
+            clipped = np.clip(SCALE_MAX - arr, SCALE_MIN, SCALE_MAX)
 
         # 16개 값을 부드러움 슬라이더 값에 따라 계단식~부드럽게 변환한다.
         # (참고: contourf는 격자 사이를 자체적으로 선형 보간하므로, 단순히
@@ -856,6 +891,54 @@ class App:
         # 여기서는 절대 건드리지 않는다 (건드릴수록 오히려 문제가 생긴다).
 
         self.canvas_widget.draw_idle()
+
+    def _load_calibration_file(self):
+        filepath = filedialog.askopenfilename(
+            title="보정 파일(JSON) 선택",
+            filetypes=[("JSON 파일", "*.json"), ("모든 파일", "*.*")]
+        )
+        if not filepath:
+            return
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw_offsets = data.get("offsets", {})
+            self.cal_offsets = {int(k): float(v) for k, v in raw_offsets.items()}
+        except Exception as e:
+            messagebox.showerror("불러오기 실패", str(e))
+            return
+        self.cal_loaded_label.config(
+            text=f"{os.path.basename(filepath)}\n({len(self.cal_offsets)}채널)",
+            fg="#4da3ff"
+        )
+        self.cal_apply_btn.config(state=tk.NORMAL)
+        # 불러오면 자동으로 ON
+        self.cal_apply = True
+        self.cal_apply_btn.config(text="보정 적용: ON", bg="#c67a00", fg="white")
+
+    def _toggle_cal_apply(self):
+        if not self.cal_offsets:
+            return
+        self.cal_apply = not self.cal_apply
+        if self.cal_apply:
+            self.cal_apply_btn.config(text="보정 적용: ON", bg="#c67a00", fg="white")
+        else:
+            self.cal_apply_btn.config(text="보정 적용: OFF", bg="#4a4a4a", fg="#888888")
+        # 즉시 화면 갱신
+        try:
+            self._draw_contour(self.current_values, force=True)
+        except Exception:
+            pass
+
+    def _sync_cal_offsets_from_tab(self):
+        """보정 탭에서 계산한 오프셋을 측정 탭에 즉시 반영한다."""
+        if not self.cal_offsets:
+            return
+        self.cal_loaded_label.config(
+            text=f"보정 탭에서 계산됨\n({len(self.cal_offsets)}채널)",
+            fg="#4da3ff"
+        )
+        self.cal_apply_btn.config(state=tk.NORMAL)
 
     # ---------------- 보정 탭 ----------------
     def _build_calibration_tab(self, parent):
@@ -1052,11 +1135,13 @@ class App:
         self.cal_result_text.config(state=tk.DISABLED)
 
         self.cal_save_btn.config(state=tk.NORMAL, bg="#2ea043", fg="white")
+        self._sync_cal_offsets_from_tab()
         messagebox.showinfo(
             "보정 완료",
             f"16채널 보정 완료\n\n"
-            f"그래프: 파랑=원본 / 빨강점선=평균(오프셋)\n"
-            f"'보정값 저장' 버튼으로 JSON에 저장하세요."
+            f"그래프: 파랑=원본 / 빨강점선=평균(오프셋)\n\n"
+            f"측정 탭 → '보정 적용' 버튼으로 실시간 적용 ON/OFF\n"
+            f"'보정값 저장' 버튼으로 JSON 저장 가능"
         )
 
     def _save_calibration(self):
