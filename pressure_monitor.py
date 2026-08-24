@@ -213,6 +213,7 @@ class App:
         self._is_dark = True
         self._warn_bg = DARK["WARN_BG"]; self._warn_fg = DARK["WARN_FG"]
         self._cal_fg_press = DARK["CAL_FG_PRESS"]
+        self.cmap_name = "jet"
 
         # --- 관리자 계정 / 기록 보관 폴더 준비 ---
         self.admin_config, is_new_config = load_or_create_admin_config()
@@ -339,6 +340,25 @@ class App:
                  bg=T_CARD, fg=T_DIM, font=("Consolas", 6)).pack(
             anchor="w", padx=10, pady=(0, 7))
 
+        # 컬러맵 선택
+        cmap_card = tk.Frame(left, bg=T_CARD,
+                             highlightbackground=T_BORD, highlightthickness=1)
+        cmap_card.pack(padx=14, pady=(0, 6), fill=tk.X)
+        cmap_hdr = tk.Frame(cmap_card, bg=T_CARD)
+        cmap_hdr.pack(fill=tk.X, padx=10, pady=(6, 5))
+        tk.Label(cmap_hdr, text="컬러맵", bg=T_CARD, fg=T_DIM,
+                 font=("Consolas", 8)).pack(side=tk.LEFT)
+        _CMAPS = ["jet", "hot", "cool", "viridis", "plasma", "inferno", "RdYlBu_r"]
+        self._cmap_var = tk.StringVar(value="jet")
+        cmap_menu = tk.OptionMenu(cmap_hdr, self._cmap_var, *_CMAPS,
+                                  command=self._on_cmap_change)
+        cmap_menu.config(bg=T_CARD, fg=T_BLUE, activebackground=T_BORD,
+                         activeforeground=T_TEXT, relief=tk.FLAT,
+                         font=("Consolas", 8), bd=0, highlightthickness=0)
+        cmap_menu["menu"].config(bg=T_CARD, fg=T_TEXT,
+                                 activebackground=T_BLUE, activeforeground=T_TEXT)
+        cmap_menu.pack(side=tk.RIGHT)
+
         self.reset_btn = tk.Button(
             left, text="실시간 범위 초기화", font=("맑은 고딕", 8),
             bg=T_CARD, fg=T_DIM, activebackground=T_BORD,
@@ -434,13 +454,14 @@ class App:
         # 컬러바는 각 축에 한 번만 생성 (매 프레임 재생성 금지)
         from matplotlib.cm import ScalarMappable
         from matplotlib.colors import Normalize
-        sm = ScalarMappable(norm=Normalize(vmin=SCALE_MIN, vmax=SCALE_MAX), cmap="jet")
+        sm = ScalarMappable(norm=Normalize(vmin=SCALE_MIN, vmax=SCALE_MAX), cmap=self.cmap_name)
         sm.set_array([])
-        for cax in (self.cax_raw, self.cax_cal):
-            cb = self.fig.colorbar(sm, cax=cax)
-            cb.ax.yaxis.set_tick_params(color="white")
+        self.cb_raw = self.fig.colorbar(sm, cax=self.cax_raw)
+        self.cb_cal = self.fig.colorbar(sm, cax=self.cax_cal)
+        for cb in (self.cb_raw, self.cb_cal):
+            cb.ax.yaxis.set_tick_params(color=T_TEXT)
             for lbl in cb.ax.get_yticklabels():
-                lbl.set_color("white")
+                lbl.set_color(T_TEXT)
 
         # ── 채널별 실시간 수치 테이블 ──────────────────────────────────
         tbl = tk.Frame(right, bg=T_BG)
@@ -784,10 +805,10 @@ class App:
         self.fig.set_facecolor(T_FIG)
         for ax in (self.ax_raw, self.ax_cal):
             self._style_axes(ax)
-        for cax in (self.cax_raw, self.cax_cal):
-            cax.set_facecolor(T_FIG)
-            cax.yaxis.set_tick_params(color=T_TEXT)
-            for lbl in cax.get_yticklabels():
+        for cb in (self.cb_raw, self.cb_cal):
+            cb.ax.set_facecolor(T_FIG)
+            cb.ax.yaxis.set_tick_params(color=T_TEXT)
+            for lbl in cb.ax.get_yticklabels():
                 lbl.set_color(T_TEXT)
         self.canvas_widget.draw_idle()
 
@@ -805,6 +826,21 @@ class App:
         # 토글 버튼 아이콘
         self.theme_btn.config(text="🌙" if self._is_dark else "☀",
                               fg=T_DIM, bg=T_HDR, activebackground=T_HDR)
+
+    def _on_cmap_change(self, cmap_name):
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize
+        self.cmap_name = cmap_name
+        for cax, attr in ((self.cax_raw, "cb_raw"), (self.cax_cal, "cb_cal")):
+            cax.cla()
+            sm = ScalarMappable(norm=Normalize(vmin=SCALE_MIN, vmax=SCALE_MAX), cmap=cmap_name)
+            sm.set_array([])
+            cb = self.fig.colorbar(sm, cax=cax)
+            cb.ax.yaxis.set_tick_params(color=T_TEXT)
+            for lbl in cb.ax.get_yticklabels():
+                lbl.set_color(T_TEXT)
+            setattr(self, attr, cb)
+        self._draw_contour(self.current_values, force=True)
 
     # ---------------- 동작 로직 ----------------
     def start_stream(self):
@@ -1010,7 +1046,7 @@ class App:
         self._style_axes(self.ax_raw)
         self.ax_raw.set_title("BEFORE  /  원본", color=T_DIM, fontsize=8.5, pad=5)
         self.ax_raw.contourf(self.x_fine, self.y_axis, Z_raw,
-                             levels=self.contour_levels, cmap="jet")
+                             levels=self.contour_levels, cmap=self.cmap_name)
 
         # ── 우측: 보정 적용 (offset - raw) 또는 안내 텍스트 ────────────
         self.ax_cal.clear()
@@ -1022,7 +1058,7 @@ class App:
             cal_display = np.clip(offsets - arr, SCALE_MIN, SCALE_MAX)
             Z_cal = np.tile(self._compute_display_row(cal_display), (self.STRIP_ROWS, 1))
             self.ax_cal.contourf(self.x_fine, self.y_axis, Z_cal,
-                                 levels=self.contour_levels, cmap="jet")
+                                 levels=self.contour_levels, cmap=self.cmap_name)
         else:
             self.ax_cal.set_facecolor("#1a1a1a")
             self.ax_cal.text(
