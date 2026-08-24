@@ -249,6 +249,9 @@ class App:
         self._ml_score       = 0.0
         self._ml_buffer      = deque(maxlen=ML_SEQ_LEN)
         self._ml_was_anomaly = False   # 이전 프레임 이상 여부 (상태 변화 시에만 로그)
+        self._ml_mean_err    = 0.0
+        self._ml_std_err     = 0.0
+        self._ml_sigma_k     = 3.0    # 임계값 = mean + k*std
 
         # ── 재생(Playback) 상태 ─────────────────────────────────────────
         self._pb_frames = []      # list of [ch0..ch15]
@@ -454,8 +457,33 @@ class App:
         self._ml_canvas.pack(fill=tk.X, padx=14, pady=(2, 0))
         self._ml_bar = self._ml_canvas.create_rectangle(
             0, 0, 0, 7, fill=T_GREEN, outline="")
+        # 민감도(σ 배수) 슬라이더
+        sigma_hdr = tk.Frame(left, bg=T_PANEL)
+        sigma_hdr.pack(fill=tk.X, padx=14, pady=(4, 0))
+        tk.Label(sigma_hdr, text="민감도 (σ 배수)",
+                 bg=T_PANEL, fg=T_DIM, font=("Consolas", 6)).pack(side=tk.LEFT)
+        self._ml_sigma_label = tk.Label(
+            sigma_hdr, text="3.0 σ", bg=T_PANEL, fg=T_BLUE,
+            font=("Consolas", 6, "bold"))
+        self._ml_sigma_label.pack(side=tk.RIGHT)
+        self._ml_sigma_slider = tk.Scale(
+            left, from_=1.0, to=6.0, resolution=0.5, orient=tk.HORIZONTAL,
+            bg=T_PANEL, fg=T_BLUE, troughcolor=T_BORD,
+            highlightthickness=0, showvalue=False, sliderrelief=tk.FLAT,
+            state=tk.DISABLED, command=self._on_sigma_change)
+        self._ml_sigma_slider.set(3.0)
+        self._ml_sigma_slider.pack(fill=tk.X, padx=14, pady=(0, 2))
+
+        # σ 구간 안내 레이블
+        sigma_hint = tk.Frame(left, bg=T_PANEL)
+        sigma_hint.pack(fill=tk.X, padx=14, pady=(0, 2))
+        tk.Label(sigma_hint, text="1σ (민감)", bg=T_PANEL, fg=T_DIM,
+                 font=("Consolas", 5)).pack(side=tk.LEFT)
+        tk.Label(sigma_hint, text="6σ (둔감)", bg=T_PANEL, fg=T_DIM,
+                 font=("Consolas", 5)).pack(side=tk.RIGHT)
+
         ml_btn_row = tk.Frame(left, bg=T_PANEL)
-        ml_btn_row.pack(fill=tk.X, padx=14, pady=(3, 0))
+        ml_btn_row.pack(fill=tk.X, padx=14, pady=(1, 0))
         tk.Button(
             ml_btn_row, text="ML 모델 훈련", font=("Consolas", 6),
             bg=T_PANEL, fg=T_DIM, activebackground=T_CARD,
@@ -961,12 +989,37 @@ class App:
                 torch.load(mp, map_location='cpu', weights_only=True))
             model.eval()
             stats = np.load(sp)
-            self._ml_model     = model
-            self._ml_threshold = float(stats['threshold'])
+            self._ml_model    = model
+            self._ml_mean_err = float(stats['mean_err'])
+            self._ml_std_err  = float(stats['std_err'])
+            # 현재 sigma k 로 임계값 재계산 (슬라이더 기억)
+            self._ml_threshold = self._ml_mean_err + self._ml_sigma_k * self._ml_std_err
+            self._ml_sigma_slider.config(state=tk.NORMAL)
+            self._ml_sigma_slider.set(self._ml_sigma_k)
+            self._ml_sigma_label.config(text=f"{self._ml_sigma_k:.1f} σ")
             self._ml_label.config(
                 text=f"ML: 로드됨  임계={self._ml_threshold:.4f}", fg=T_BLUE)
-        except Exception as e:
+        except Exception:
             self._ml_label.config(text="ML: 로드 실패", fg=T_RED)
+
+    def _on_sigma_change(self, val):
+        k = float(val)
+        self._ml_sigma_k = k
+        self._ml_sigma_label.config(text=f"{k:.1f} σ")
+        if self._ml_std_err > 0:
+            self._ml_threshold = self._ml_mean_err + k * self._ml_std_err
+            # 현재 점수 기준으로 레이블 즉시 갱신
+            score = self._ml_score
+            thresh = self._ml_threshold
+            tag = "⚠ 이상" if score > thresh else "정상"
+            self._ml_label.config(
+                text=f"ML: {score:.4f} / {thresh:.4f}  {tag}  [{k:.1f}σ]",
+                fg=T_RED if score > thresh else T_DIM)
+            ratio = min(1.0, score / thresh)
+            color = T_RED if score > thresh else (T_ORNG if ratio > 0.7 else T_GREEN)
+            w = max(1, self._ml_canvas.winfo_width())
+            self._ml_canvas.coords(self._ml_bar, 0, 0, int(w * ratio), 7)
+            self._ml_canvas.itemconfig(self._ml_bar, fill=color)
 
     def _run_ml_inference(self):
         raw      = np.array(self._ml_buffer, dtype=np.float32)
@@ -986,7 +1039,7 @@ class App:
         self._ml_canvas.itemconfig(self._ml_bar, fill=color)
         tag = "⚠ 이상" if is_anomaly else "정상"
         self._ml_label.config(
-            text=f"ML: {score:.4f} / {thresh:.4f}  {tag}",
+            text=f"ML: {score:.4f} / {thresh:.4f}  {tag}  [{self._ml_sigma_k:.1f}σ]",
             fg=T_RED if is_anomaly else T_DIM)
 
         # 상태 변화 시에만 로그 기록 (매 프레임 기록 방지)
