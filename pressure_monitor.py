@@ -54,6 +54,7 @@ ADMIN_CONFIG_PATH = 'admin_config.json'
 RECORDS_DIR = 'records'
 DEFAULT_ADMIN_ID = 'admin'
 DEFAULT_ADMIN_PW = '1234'
+ANOMALY_LOG_PATH = 'anomaly_log.csv'
 
 
 def _hash_password(pw):
@@ -178,7 +179,8 @@ class App:
 
         self.cal_offsets = {}
         self.cal_apply = False
-        self._ch_history = [[] for _ in range(NUM_CHANNELS)]  # 채널별 최근 raw 값 버퍼
+        self._ch_history   = [[] for _ in range(NUM_CHANNELS)]
+        self._prev_anomaly = [None] * NUM_CHANNELS  # 직전 이상 상태 (변화 시에만 로그)
 
         # --- 관리자 계정 / 기록 보관 폴더 준비 ---
         self.admin_config, is_new_config = load_or_create_admin_config()
@@ -327,6 +329,12 @@ class App:
             font=("Consolas", 9), justify="left"
         )
         self.range_label.pack(anchor="w", padx=20, pady=(2, 0))
+
+        tk.Button(
+            left, text="이상 로그 열기", font=("맑은 고딕", 8),
+            bg="#2a2a2a", fg="#888888", relief=tk.FLAT,
+            command=self._open_anomaly_log
+        ).pack(anchor="w", padx=20, pady=(6, 0))
 
         # --- 보정 적용 섹션 ---
         tk.Frame(left, bg="#3a3a3a", height=1).pack(fill=tk.X, padx=20, pady=(12, 8))
@@ -950,6 +958,15 @@ class App:
                     reason = "보정이탈"
 
             # 셀 색상 결정
+            # 상태 변화 시에만 로그 (매 프레임 쓰지 않음)
+            prev = self._prev_anomaly[i]
+            if reason != prev:
+                if reason is not None:
+                    self._log_anomaly(i, "감지", reason, raw_v, delta)
+                else:
+                    self._log_anomaly(i, "복구", prev, raw_v, delta)
+                self._prev_anomaly[i] = reason
+
             if reason:
                 warn_channels.append((i, reason))
                 raw_bg, raw_fg = "#332200", "#ffcc00"
@@ -984,6 +1001,28 @@ class App:
             self.ch_status_label.config(text="● 전 채널 정상", fg="#3fb950")
 
         self.canvas_widget.draw_idle()
+
+    def _log_anomaly(self, channel, event, reason, raw_v, delta):
+        is_new = (not os.path.exists(ANOMALY_LOG_PATH)
+                  or os.path.getsize(ANOMALY_LOG_PATH) == 0)
+        try:
+            with open(ANOMALY_LOG_PATH, "a", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                if is_new:
+                    w.writerow(["datetime", "channel", "event", "reason",
+                                "raw_adc", "cal_delta"])
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                w.writerow([now_str, f"ch{channel}", event, reason,
+                            raw_v, str(delta) if delta is not None else "-"])
+        except OSError:
+            pass
+
+    def _open_anomaly_log(self):
+        path = os.path.abspath(ANOMALY_LOG_PATH)
+        if not os.path.exists(path):
+            messagebox.showinfo("이상 로그", "아직 기록된 이상 이력이 없습니다.")
+            return
+        self._open_path(path)
 
     def _load_calibration_file(self):
         filepath = filedialog.askopenfilename(
